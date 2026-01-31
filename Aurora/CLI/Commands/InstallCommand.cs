@@ -2,6 +2,7 @@ using Aurora.Core.IO;
 using Aurora.Core.Logic;
 using Aurora.Core.Models;
 using Aurora.Core.Net;
+using Aurora.Core.Parsing;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -58,11 +59,24 @@ public class InstallCommand : ICommand
 
         // --- 3. LOAD REPOS (Needed for dependencies even in local mode) ---
         var availablePackages = new List<Package>();
-        if (Directory.Exists(config.RepoDir))
+        var repoDir = config.RepoDir; // From CliConfiguration
+
+        if (Directory.Exists(repoDir))
         {
-            foreach (var file in Directory.GetFiles(config.RepoDir, "*.yaml"))
+            // Find all .aurepo files synced from repositories
+            foreach (var file in Directory.GetFiles(repoDir, "*.aurepo"))
             {
-                try { availablePackages.AddRange(Aurora.Core.Parsing.PackageParser.ParseRepository(File.ReadAllText(file))); } catch {}
+                try 
+                {
+                    var repoContent = File.ReadAllText(file);
+                    var parsedRepo = RepoParser.Parse(repoContent);
+                    availablePackages.AddRange(parsedRepo.Packages);
+                    AnsiConsole.MarkupLine($"[grey]Loaded {parsedRepo.Packages.Count} packages from {Path.GetFileName(file)}.[/]");
+                } 
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"[yellow]Warning: Could not parse repository file {Path.GetFileName(file)}: {ex.Message}[/]");
+                }
             }
         }
 

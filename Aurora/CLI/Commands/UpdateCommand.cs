@@ -1,5 +1,6 @@
 using Aurora.Core.Logic;
-using Aurora.Core.Models; // Needed for Package list
+using Aurora.Core.Models;
+using Aurora.Core.Parsing; // Needed for Package list
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -20,10 +21,10 @@ public class UpdateCommand : ICommand
         }
 
         // 2. Load ALL repository metadata files
-        var repoFiles = Directory.GetFiles(config.RepoDir, "*.yaml");
+        var repoFiles = Directory.GetFiles(config.RepoDir, "*.aurepo");
         if (repoFiles.Length == 0)
         {
-            AnsiConsole.MarkupLine($"[red]No repository data found in {config.RepoDir}.[/]");
+            AnsiConsole.MarkupLine($"[red]No repository databases found in {config.RepoDir}.[/]");
             AnsiConsole.MarkupLine("[yellow]Run 'sync' first.[/]");
             return Task.CompletedTask;
         }
@@ -36,8 +37,8 @@ public class UpdateCommand : ICommand
             try 
             {
                 var content = File.ReadAllText(file);
-                var pkgs = Aurora.Core.Parsing.PackageParser.ParseRepository(content);
-                repoPackages.AddRange(pkgs);
+                var parsedRepo = RepoParser.Parse(content);
+                repoPackages.AddRange(parsedRepo.Packages);
             } 
             catch (Exception ex)
             {
