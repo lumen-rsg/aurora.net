@@ -16,6 +16,7 @@ public class Package
 
     // Dependency Graph
     public List<string> Depends { get; set; } = new(); // Maps from dependencies.runtime
+    public List<string> MakeDepends { get; set; } = new();
     public List<string> OptDepends { get; set; } = new(); // Maps from dependencies.optional
     public List<string> Conflicts { get; set; } = new();
     public List<string> Replaces { get; set; } = new();

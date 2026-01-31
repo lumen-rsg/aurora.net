@@ -24,7 +24,8 @@ class Program
             new AuditCommand(),
             new RecoverCommand(),
             new GenRepoCommand(),
-            new TestGenCommand()
+            new TestGenCommand(),
+            new TestParserCommand()
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);

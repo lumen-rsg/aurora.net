@@ -132,4 +132,58 @@ public class TestGenCommand : ICommand
         return Task.CompletedTask;
     }
     
+    
+}
+
+public class TestParserCommand : ICommand
+{
+    public string Name => "test-parser";
+    public string Description => "Test new YAML format";
+
+    public Task ExecuteAsync(CliConfiguration config, string[] args)
+    {
+        var yaml = @"
+# Aurora package metadata
+package:
+  name: acl
+  version: 2.3.2-1
+  description: Access control list utilities
+  architecture: x86_64
+  build_date: 1769866934
+
+metadata:
+  license: 
+    - LGPL-2.1
+  conflicts: 
+    - old-acl
+
+dependencies:
+  runtime: 
+    - glibc
+  build: 
+    - attr
+
+files:
+  package_size: 346398
+  source_hash: 7dec4e45e0c8c10b2855f13cd0f5c5bccbb81751f1cecb698beaf1b9f0fe9f60
+";
+        var pkg = Aurora.Core.Parsing.PackageParser.ParseManifest(yaml);
+        
+        Spectre.Console.AnsiConsole.MarkupLine($"[green]Parsed Package:[/] {pkg.Name} v{pkg.Version}");
+        Spectre.Console.AnsiConsole.MarkupLine($"Build Date: {pkg.BuildDate}");
+        Spectre.Console.AnsiConsole.MarkupLine($"Runtime Deps: {string.Join(", ", pkg.Depends)}");
+        Spectre.Console.AnsiConsole.MarkupLine($"Build Deps (Ignored): {string.Join(", ", pkg.OptDepends)}"); // Note: Build deps not in Package model usually
+        Spectre.Console.AnsiConsole.MarkupLine($"Hash: {pkg.Checksum}");
+
+        if (pkg.Name == "acl" && pkg.Depends.Contains("glibc") && pkg.Checksum.StartsWith("7dec"))
+        {
+            Spectre.Console.AnsiConsole.MarkupLine("[bold green]PASS: New format parsed successfully.[/]");
+        }
+        else
+        {
+            Spectre.Console.AnsiConsole.MarkupLine("[bold red]FAIL: Parsing incorrect.[/]");
+        }
+        
+        return Task.CompletedTask;
+    }
 }

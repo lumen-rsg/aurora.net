@@ -6,44 +6,34 @@ public static class PackageParser
 {
     public static Package ParseManifest(string content)
     {
-        var lines = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries);
-        var pkg = new Package();
-        ParseBlock(lines, 0, lines.Length, pkg);
-        return pkg;
+        // 1. Parse into strict Contract
+        var manifest = ManifestParser.Parse(content);
+        
+        // 2. Convert to Domain Model
+        return ManifestConverter.ToPackage(manifest);
     }
 
     public static List<Package> ParseRepository(string content)
     {
-        var lines = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries);
-        var packages = new List<Package>();
+        // If repo.yaml format is a list of these full blocks, we need a slight adjustment.
+        // But typically repo.yaml is a summarised version.
+        // Let's assume for this step we are parsing the 'aurora.meta' inside a package.
         
-        Package? currentPkg = null;
-        var currentBlockStart = 0;
-
-        for (int i = 0; i < lines.Length; i++)
+        // If you need to parse a list of these using the new format:
+        var pkgs = new List<Package>();
+        // Simple splitter for YAML documents if separated by dashes
+        var docs = content.Split(new[] { "---" }, StringSplitOptions.RemoveEmptyEntries);
+        
+        foreach (var doc in docs)
         {
-            var line = lines[i].Trim();
-            
-            if (line.StartsWith("- name:"))
+            if (string.IsNullOrWhiteSpace(doc)) continue;
+            try 
             {
-                if (currentPkg != null)
-                {
-                    ParseBlock(lines, currentBlockStart, i, currentPkg);
-                    packages.Add(currentPkg);
-                }
-
-                currentPkg = new Package();
-                currentBlockStart = i; 
+                pkgs.Add(ParseManifest(doc));
             }
+            catch { /* warning */ }
         }
-
-        if (currentPkg != null)
-        {
-            ParseBlock(lines, currentBlockStart, lines.Length, currentPkg);
-            packages.Add(currentPkg);
-        }
-
-        return packages;
+        return pkgs;
     }
 
     private static void ParseBlock(string[] lines, int start, int end, Package pkg)
