@@ -8,6 +8,17 @@ namespace Aurora.Core.IO;
 
 public static class PackageInstaller
 {
+    
+    private static readonly HashSet<string> _ignoredFiles = new()
+    {
+        "aurora.meta",
+        ".AURORA_META",
+        ".INSTALL",
+        ".AURORA_SCRIPTS",
+        ".MTREE",
+        ".PKGINFO"
+    };
+    
     // UPDATE: Callback now takes (PhysicalPath, ManifestPath)
     public static void InstallPackage(
         string packagePath, 
@@ -38,15 +49,13 @@ public static class PackageInstaller
 
         while (tar.GetNextEntry() is { } entry)
         {
-            // FIX: Handle leading ./
-            var name = entry.Name;
+            var name = entry.Name.Replace('\\', '/');
             if (name.StartsWith("./")) name = name.Substring(2);
 
-            if (name == ".AURORA_SCRIPTS")
+            // --- FIX: Support both .INSTALL and legacy .AURORA_SCRIPTS ---
+            if (name == ".INSTALL" || name == ".AURORA_SCRIPTS")
             {
-                // Use a unique name so parallel installs don't clash (if we ever did that)
-                // or just to avoid stale files
-                var dest = Path.Combine(outputDir, $".AURORA_SCRIPTS_{Path.GetFileNameWithoutExtension(packagePath)}");
+                var dest = Path.Combine(outputDir, $".INSTALL_{Path.GetFileNameWithoutExtension(packagePath)}");
                 entry.ExtractToFile(dest, overwrite: true);
                 return dest;
             }
@@ -54,33 +63,30 @@ public static class PackageInstaller
         return null;
     }
 
-    private static void ExtractEntry(
+        private static void ExtractEntry(
         TarEntry entry, 
         string rootPath, 
         Action<string, string>? onFileExtracted, 
         bool stagingMode)
     {
         var entryName = entry.Name.Replace('\\', '/');
-        
-        // Remove ./ prefix if present
         if (entryName.StartsWith("./")) entryName = entryName.Substring(2);
 
-        // 1. Calculate Physical Path
-        var physicalPath = PathHelper.GetPath(rootPath, entryName);
-        
-        // 2. Calculate Manifest Path
-        var manifestPath = "/" + entryName.TrimStart('/');
+        // --- FIX: Filter out Metadata Files ---
+        // We check the filename part to catch these files at the root of the archive
+        var fileName = Path.GetFileName(entryName);
+        if (_ignoredFiles.Contains(fileName)) 
+        {
+            // AuLogger.Debug($"Skipping metadata file: {fileName}");
+            return;
+        }
 
-        // 3. Staging Logic
+        var physicalPath = PathHelper.GetPath(rootPath, entryName);
+        var manifestPath = "/" + entryName.TrimStart('/');
         var targetPath = stagingMode ? physicalPath + ".aurora_new" : physicalPath;
 
-        // Security Check
         if (!physicalPath.StartsWith(Path.GetFullPath(rootPath)))
              throw new IOException($"Zip Slip detected: {entryName}");
-
-        if (Path.GetFileName(physicalPath).StartsWith(".AURORA_")) return;
-        
-        // AnsiConsole.MarkupLine($"[grey]Extracting: {entryName} -> {targetPath}[/]");
 
         switch (entry.EntryType)
         {
@@ -107,6 +113,34 @@ public static class PackageInstaller
                 ApplyMetadata(entry, targetPath, isSymlink: true);
                 break;
         }
+    }
+    
+    public static Aurora.Core.Models.Package ReadManifestFromPackage(string packagePath)
+    {
+        using var fs = File.OpenRead(packagePath);
+        using var gz = new GZipStream(fs, CompressionMode.Decompress);
+        using var tar = new TarReader(gz);
+
+        while (tar.GetNextEntry() is { } entry)
+        {
+            var name = entry.Name.Replace('\\', '/');
+            if (name.StartsWith("./")) name = name.Substring(2);
+
+            // Check for new Contract OR Legacy format
+            if (name == "aurora.meta" || name == ".AURORA_META")
+            {
+                using var stream = entry.DataStream;
+                if (stream == null) throw new InvalidDataException("Manifest entry is empty.");
+                
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                var content = reader.ReadToEnd();
+                
+                // Use our Parser
+                return Aurora.Core.Parsing.PackageParser.ParseManifest(content);
+            }
+        }
+
+        throw new InvalidDataException("No metadata file (aurora.meta) found in package.");
     }
 
     private static void ApplyMetadata(TarEntry entry, string path, bool isSymlink = false)

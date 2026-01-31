@@ -33,23 +33,29 @@ public class GenRepoCommand : ICommand
             var filename = $"{name}-{ver}-x86_64.au";
             var path = Path.Combine(outputDir, filename);
             
-            using var fs = File.Create(path);
-            using var gz = new GZipStream(fs, CompressionLevel.Fastest);
-            using var tar = new TarWriter(gz, TarEntryFormat.Pax);
+            // FIX: Wrap creation in a scope so 'fs' is disposed/closed immediately
+            {
+                using var fs = File.Create(path);
+                using var gz = new GZipStream(fs, CompressionLevel.Fastest);
+                using var tar = new TarWriter(gz, TarEntryFormat.Pax);
 
-            var content = Encoding.UTF8.GetBytes($"Binary for {name}");
-            var ms = new MemoryStream(content);
-            var entry = new PaxTarEntry(TarEntryType.RegularFile, $"usr/bin/{name}");
-            entry.DataStream = ms;
-            tar.WriteEntry(entry);
+                var content = Encoding.UTF8.GetBytes($"Binary for {name}");
+                var ms = new MemoryStream(content);
+                var entry = new PaxTarEntry(TarEntryType.RegularFile, $"usr/bin/{name}");
+                entry.DataStream = ms;
+                tar.WriteEntry(entry);
+                // ms is disposed by TarWriter or GC, no file lock issues here
+            } 
+            // <--- File is now closed.
 
-            // NEW: Compute Hash
+            // Now it is safe to read the file for hashing
             var hash = HashHelper.ComputeFileHash(path);
-            pkg.Checksum = hash; // Store in object for YAML writing
+            pkg.Checksum = hash;
 
-            AnsiConsole.MarkupLine($"Created [cyan]{filename}[/] (SHA256: {hash.Substring(0, 8)}...)");
+            AnsiConsole.MarkupLine($"Created [cyan]{filename}[/] ({hash.Substring(0, 8)}...)");
         }
 
+        // --- DEFINE THE WORLD ---
         MakePkg("glibc", "2.38", new string[]{}, new string[]{});
         MakePkg("ncurses", "6.4", new []{"glibc"}, new string[]{});
         MakePkg("vim", "9.0", new []{"ncurses"}, new []{"nano"}); 
@@ -58,44 +64,37 @@ public class GenRepoCommand : ICommand
         var sb = new StringBuilder();
         foreach (var p in packages)
         {
-            sb.AppendLine($"- name: \"{p.Name}\"");
-            sb.AppendLine($"  version: \"{p.Version}\"");
-            sb.AppendLine($"  arch: \"{p.Arch}\"");
-            if (p.Depends.Any())
-            {
-                sb.AppendLine("  deps:");
-                foreach (var d in p.Depends) sb.AppendLine($"    - {d}");
-            }
+            // Use Strict YAML format
+            sb.AppendLine("---");
+            sb.AppendLine("package:");
+            sb.AppendLine($"  name: {p.Name}");
+            sb.AppendLine($"  version: {p.Version}");
+            sb.AppendLine($"  architecture: {p.Arch}");
+            sb.AppendLine($"  description: {p.Description}");
+            
+            sb.AppendLine("metadata:");
             if (p.Conflicts.Any())
             {
                 sb.AppendLine("  conflicts:");
                 foreach (var c in p.Conflicts) sb.AppendLine($"    - {c}");
             }
+
+            sb.AppendLine("dependencies:");
+            sb.AppendLine("  runtime:");
+            if (p.Depends.Any())
+            {
+                foreach (var d in p.Depends) sb.AppendLine($"    - {d}");
+            }
+            
+            sb.AppendLine("files:");
             if (!string.IsNullOrEmpty(p.Checksum))
             {
-                sb.AppendLine($"  sha256: \"{p.Checksum}\"");
+                sb.AppendLine($"  source_hash: {p.Checksum}");
             }
             sb.AppendLine();
         }
 
         File.WriteAllText(Path.Combine(outputDir, "repo.yaml"), sb.ToString());
-        
-        // --- NEW: Sign the repo ---
-        try 
-        {
-            // We sign the repo.yaml -> repo.yaml.asc
-            // We pass null for HomeDir to use the user's default keychain for signing
-            // (Or we could accept a flag --gpghome)
-            
-            AnsiConsole.MarkupLine("[blue]Signing repository...[/]");
-            GpgHelper.SignFile(Path.Combine(outputDir, "repo.yaml"));
-            AnsiConsole.MarkupLine("[green]Signed repo.yaml.asc generated.[/]");
-        }
-        catch
-        {
-            AnsiConsole.MarkupLine("[yellow]Warning: GPG signing failed (Do you have a key?). Repository is unsigned.[/]");
-        }
-        
         AnsiConsole.MarkupLine($"[green]Repository generated at {outputDir}[/]");
         return Task.CompletedTask;
     }
