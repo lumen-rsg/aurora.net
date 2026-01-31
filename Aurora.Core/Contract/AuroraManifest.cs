@@ -29,6 +29,8 @@ public class PackageSection
     
     public string BuildTool { get; set; } = string.Empty;
     public string BuildToolVersion { get; set; } = string.Empty;
+    
+    public List<string> AllNames { get; set; } = new(); // NEW: Stores all names from the pkgname array
 }
 
 /// <summary>

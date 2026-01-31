@@ -13,7 +13,7 @@ public interface IBuildProvider
     Task<AuroraManifest> GetManifestAsync(string directory);
 
     // Phase 2: Source handling (download/checksum)
-    Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg); 
+    Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, string startDir); 
 
     // Phase 3: The actual build execution
     Task BuildAsync(AuroraManifest manifest, string srcDir, string pkgDir, Action<string> logAction);

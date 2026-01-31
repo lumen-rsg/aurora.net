@@ -27,28 +27,34 @@ public class ArchBuildProvider : IBuildProvider
         return manifest;
     }
 
-    public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg)
+    public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, string startDir) // Added startDir
     {
-        // 1. Download
-        var sourceMgr = new SourceManager();
+        if (!Directory.Exists(downloadDir)) Directory.CreateDirectory(downloadDir);
+
+        // Pass startDir to SourceManager
+        var sourceMgr = new SourceManager(startDir);
+        
+        AnsiConsole.MarkupLine("[bold]Fetching sources...[/]");
+
         foreach (var sourceStr in manifest.Build.Source)
         {
             var entry = new SourceEntry(sourceStr);
+            // downloadDir (SRCDEST) is the target destination for remote stuff
             await sourceMgr.FetchSourceAsync(entry, downloadDir, msg => 
             {
                 AnsiConsole.MarkupLine($"  [grey]-> {msg}[/]");
             });
         }
-
+        
         // 2. Verify Checksums
         var integrity = new IntegrityManager();
-        integrity.VerifyChecksums(manifest, downloadDir);
+        integrity.VerifyChecksums(manifest, downloadDir, startDir);
 
         // 3. Verify Signatures (Only if NOT skipped)
         if (!skipGpg)
         {
             var sigVerifier = new SignatureVerifier();
-            sigVerifier.VerifySignatures(manifest, downloadDir);
+            sigVerifier.VerifySignatures(manifest, downloadDir, startDir);
         }
         else
         {
@@ -68,22 +74,37 @@ public class ArchBuildProvider : IBuildProvider
         
         exec.PrepareDirectories();
 
+        // Extract sources, passing startDir so it can find local files
         var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST"); 
         var srcDir = Path.Combine(absoluteBuildDir, "src");
         Directory.CreateDirectory(srcDir);
 
-        await extractor.ExtractAllAsync(manifest, cacheDir, srcDir);
+        await extractor.ExtractAllAsync(manifest, cacheDir, srcDir, absoluteStartDir);
 
         // Pass the logAction to the execution manager
         await exec.RunBuildFunctionAsync("prepare", logAction);
         await exec.RunBuildFunctionAsync("build", logAction);
-        
-        if (manifest.Build.Environment.Contains("check"))
-            await exec.RunBuildFunctionAsync("check", logAction);
-        
-        await exec.RunBuildFunctionAsync("package", logAction);
-        
-        var finalPkgDir = Path.Combine(absoluteBuildDir, "pkg", manifest.Package.Name);
-        await ArtifactCreator.CreateAsync(manifest, finalPkgDir, absoluteStartDir);
+
+        // --- NEW: SPLIT PACKAGING LOOP ---
+        var packageNames = manifest.Package.AllNames.Count > 0 
+            ? manifest.Package.AllNames 
+            : new List<string> { manifest.Package.Name };
+
+        foreach (var name in packageNames)
+        {
+            AnsiConsole.MarkupLine($"[bold magenta]Package Phase:[/] [white]{name}[/]");
+            
+            // 1. Determine function name (package() or package_foo())
+            string funcName = packageNames.Count > 1 || name != manifest.Package.Name 
+                ? $"package_{name}" 
+                : "package";
+
+            // 2. Run function and capture overrides
+            var subManifest = await exec.RunPackageFunctionAsync(funcName, manifest, logAction);
+
+            // 3. Create Artifact for this specific sub-package
+            var subPkgDir = Path.Combine(absoluteBuildDir, "pkg", name);
+            await ArtifactCreator.CreateAsync(subManifest, subPkgDir, absoluteStartDir);
+        }
     }
 }

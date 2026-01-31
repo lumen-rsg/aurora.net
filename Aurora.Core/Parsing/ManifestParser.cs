@@ -114,6 +114,12 @@ public static class ManifestParser
                     "noextract" => m.Build.NoExtract,
                     _ => null
                 };
+            case Section.Package:
+                return key switch
+                {
+                    "all_names" => m.Package.AllNames,
+                    _ => null
+                };
         }
         return null;
     }

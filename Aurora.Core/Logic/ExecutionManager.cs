@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Text;
 using Aurora.Core.Contract;
+using Aurora.Core.Parsing;
 using Spectre.Console;
 
 namespace Aurora.Core.Logic;
@@ -35,10 +37,12 @@ public class ExecutionManager
         Directory.CreateDirectory(_pkgDir);
     }
 
-    // Update the signature to accept a progress callback
     public async Task RunBuildFunctionAsync(string functionName, Action<string>? onLineReceived = null)
     {
         AnsiConsole.MarkupLine($"[cyan]=> Running {functionName}()...[/]");
+
+        // Path for the log file
+        var logFile = Path.Combine(_buildDir, "build.log");
 
         var psi = new ProcessStartInfo
         {
@@ -68,17 +72,18 @@ public class ExecutionManager
         using var process = Process.Start(psi);
         if (process == null) throw new Exception($"Failed to start process for {functionName}");
 
-        // Handle Standard Output
-        process.OutputDataReceived += (_, args) => 
-        { 
-            if (args.Data != null) onLineReceived?.Invoke(args.Data); 
-        };
+        // Use a Thread-safe way to append to the log file
+        void LogToFile(string? data)
+        {
+            if (data == null) return;
+            onLineReceived?.Invoke(data);
+            
+            // Append to build.log
+            File.AppendAllText(logFile, data + Environment.NewLine);
+        }
 
-        // Handle Errors (we'll treat these as normal logs for the spinner)
-        process.ErrorDataReceived += (_, args) => 
-        { 
-            if (args.Data != null) onLineReceived?.Invoke(args.Data); 
-        };
+        process.OutputDataReceived += (_, args) => LogToFile(args.Data);
+        process.ErrorDataReceived += (_, args) => LogToFile(args.Data);
 
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
@@ -87,7 +92,8 @@ public class ExecutionManager
 
         if (process.ExitCode != 0)
         {
-            throw new Exception($"Function '{functionName}' failed with exit code {process.ExitCode}.");
+            // Throw a specific exception that includes the log path
+            throw new Exception($"Function '{functionName}' failed with exit code {process.ExitCode}. See {logFile} for details.");
         }
     }
 
@@ -135,5 +141,130 @@ public class ExecutionManager
             path = "/usr/lib/ccache/bin:" + path;
         }
         psi.Environment["PATH"] = path;
+    }
+    
+public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, AuroraManifest baseManifest, Action<string>? logAction = null)
+    {
+        string subPkgName = functionName.StartsWith("package_") ? functionName.Replace("package_", "") : baseManifest.Package.Name;
+        string subPkgDir = Path.Combine(_buildDir, "pkg", subPkgName);
+        Directory.CreateDirectory(subPkgDir);
+
+        var pkgbuildPath = Path.Combine(_startDir, "PKGBUILD");
+
+        var shim = $@"
+            export srcdir='{_srcDir}'
+            export pkgdir='{subPkgDir}'
+            export pkgname='{subPkgName}'
+            export startdir='{_startDir}'
+            source '{pkgbuildPath}'
+
+            if type -t {functionName} &>/dev/null; then
+                cd ""$srcdir""
+                {functionName}
+            fi
+
+            echo ""---AURORA_OVERRIDE_START---""
+            echo ""package:""
+            echo ""  description: $pkgdesc""
+            echo ""metadata:""
+            echo ""  provides:""
+            for x in ""${{provides[@]-}}""; do [[ -n ""$x"" ]] && echo ""    - $x""; done
+            echo ""  conflicts:""
+            for x in ""${{conflicts[@]-}}""; do [[ -n ""$x"" ]] && echo ""    - $x""; done
+            echo ""  replaces:""
+            for x in ""${{replaces[@]-}}""; do [[ -n ""$x"" ]] && echo ""    - $x""; done
+            echo ""dependencies:""
+            echo ""  runtime:""
+            for x in ""${{depends[@]-}}""; do [[ -n ""$x"" ]] && echo ""    - $x""; done
+            echo ""  optional:""
+            for x in ""${{optdepends[@]-}}""; do [[ -n ""$x"" ]] && echo ""    - $x""; done
+            echo ""---AURORA_OVERRIDE_END---""";
+
+        var newManifest = CloneManifest(baseManifest);
+        newManifest.Package.Name = subPkgName;
+
+        var psi = new ProcessStartInfo {
+            FileName = "/bin/bash",
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            UseShellExecute = false, CreateNoWindow = true,
+            WorkingDirectory = _srcDir
+        };
+        psi.Arguments = $"-c \"{shim.Replace("\"", "\\\"")}\"";
+
+        var overrideYaml = new StringBuilder();
+        bool captureMetadata = false;
+
+        using var process = Process.Start(psi);
+        process.OutputDataReceived += (_, args) => {
+            if (args.Data == null) return;
+            if (args.Data == "---AURORA_OVERRIDE_START---") { captureMetadata = true; return; }
+            if (args.Data == "---AURORA_OVERRIDE_END---") { captureMetadata = false; return; }
+
+            if (captureMetadata) overrideYaml.AppendLine(args.Data);
+            else logAction?.Invoke(args.Data);
+        };
+        process.ErrorDataReceived += (_, args) => { if (args.Data != null) logAction?.Invoke(args.Data); };
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        await process.WaitForExitAsync();
+
+        // Parse the captured YAML and apply it to our sub-manifest
+        if (overrideYaml.Length > 0)
+        {
+            var overrides = ManifestParser.Parse(overrideYaml.ToString());
+            ApplyOverrides(newManifest, overrides);
+        }
+
+        return newManifest;
+    }
+
+    private void ApplyOverrides(AuroraManifest target, AuroraManifest source)
+    {
+        if (!string.IsNullOrEmpty(source.Package.Description)) target.Package.Description = source.Package.Description;
+        
+        // Only override lists if the sub-function actually defined them
+        if (source.Metadata.Provides.Count > 0) target.Metadata.Provides = source.Metadata.Provides;
+        if (source.Metadata.Conflicts.Count > 0) target.Metadata.Conflicts = source.Metadata.Conflicts;
+        if (source.Metadata.Replaces.Count > 0) target.Metadata.Replaces = source.Metadata.Replaces;
+        if (source.Dependencies.Runtime.Count > 0) target.Dependencies.Runtime = source.Dependencies.Runtime;
+        if (source.Dependencies.Optional.Count > 0) target.Dependencies.Optional = source.Dependencies.Optional;
+    }
+    
+
+    private AuroraManifest CloneManifest(AuroraManifest m)
+    {
+        return new AuroraManifest
+        {
+            Package = new PackageSection {
+                Name = m.Package.Name,
+                Version = m.Package.Version,
+                Description = m.Package.Description,
+                Architecture = m.Package.Architecture,
+                Maintainer = m.Package.Maintainer,
+                AllNames = new List<string>(m.Package.AllNames)
+            },
+            Metadata = new MetadataSection {
+                Url = m.Metadata.Url,
+                License = new List<string>(m.Metadata.License),
+                Conflicts = new List<string>(m.Metadata.Conflicts),
+                Provides = new List<string>(m.Metadata.Provides),
+                Replaces = new List<string>(m.Metadata.Replaces)
+            },
+            Dependencies = new DependencySection {
+                Runtime = new List<string>(m.Dependencies.Runtime),
+                Optional = new List<string>(m.Dependencies.Optional),
+                Build = new List<string>(m.Dependencies.Build)
+            },
+            Build = new BuildSection {
+                Options = new List<string>(m.Build.Options),
+                Source = new List<string>(m.Build.Source),
+                Sha256Sums = new List<string>(m.Build.Sha256Sums)
+            },
+            Files = new FilesSection {
+                PackageSize = m.Files.PackageSize,
+                SourceHash = m.Files.SourceHash
+            }
+        };
     }
 }

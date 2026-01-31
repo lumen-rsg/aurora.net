@@ -12,8 +12,12 @@ public class BuildCommand : ICommand
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {
+        
         // 1. Determine build directory (default to current '.')
         string targetPath = args.Length > 0 ? Path.GetFullPath(args[0]) : Directory.GetCurrentDirectory();
+        var lastLines = new Queue<string>(20);
+        string buildWorkDir = Path.Combine(targetPath, ".aurora-build");
+        string logFilePath = Path.Combine(buildWorkDir, "build.log");
 
         if (!Directory.Exists(targetPath))
         {
@@ -22,6 +26,7 @@ public class BuildCommand : ICommand
 
         AnsiConsole.Write(new Rule($"[yellow]Aurora Build Engine[/]").RuleStyle("grey"));
         AnsiConsole.MarkupLine($"[blue]Project Directory:[/] {targetPath}");
+        
 
         // 2. Identify the Build Provider
         // In the future, we can inject a list of providers. For now, we instantiate Arch.
@@ -45,34 +50,34 @@ public class BuildCommand : ICommand
             // 4. Phase 2: Fetch Sources
             // We use a folder inside the project for persistent source caching (SRCDEST)
             string downloadDir = Path.Combine(targetPath, "SRCDEST");
-            await provider.FetchSourcesAsync(manifest, downloadDir, config.SkipGpg);
+            await provider.FetchSourcesAsync(manifest, downloadDir, config.SkipGpg, targetPath);
 
             // 5. Phase 3: Execute Build
             // We create a temporary build isolation folder
-            string buildWorkDir = Path.Combine(targetPath, ".aurora-build");
+            
             
             await AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
-                .StartAsync("Initializing build environment...", async ctx => 
+                .StartAsync("Building...", async ctx => 
                 {
-                    // Define the logger action
                     Action<string> logger = (line) => 
                     {
-                        // 1. Sanitize the line (escape brackets for Spectre)
-                        var sanitized = Markup.Escape(line.Trim());
+                        var trimmed = line.Trim();
+                        if (string.IsNullOrEmpty(trimmed)) return;
 
-                        // 2. Truncate to fit terminal width (prevents wrapping/breaking UI)
+                        // 1. Add to the circular buffer
+                        if (lastLines.Count >= 20) lastLines.Dequeue();
+                        lastLines.Enqueue(trimmed);
+
+                        // 2. Update spinner
+                        var sanitized = Markup.Escape(trimmed);
                         int maxWidth = Console.WindowWidth - 20;
                         if (sanitized.Length > maxWidth && maxWidth > 0)
-                        {
                             sanitized = sanitized.Substring(0, maxWidth) + "...";
-                        }
 
-                        // 3. Update the spinner text
                         ctx.Status($"[grey]{sanitized}[/]");
                     };
 
-                    // Trigger the build with our new logger
                     await provider.BuildAsync(manifest, buildWorkDir, targetPath, logger);
                 });
 
@@ -88,8 +93,25 @@ public class BuildCommand : ICommand
         catch (Exception ex)
         {
             AnsiConsole.Write(new Rule("[red]Build Failed[/]").RuleStyle("red"));
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
-            // Return or rethrow depending on CLI strategy
+            
+            // --- NEW: DISPLAY CONTEXT ON FAILURE ---
+            if (lastLines.Count > 0)
+            {
+                var rows = string.Join(Environment.NewLine, lastLines.Select(l => "[grey]" + Markup.Escape(l) + "[/]"));
+                AnsiConsole.Write(
+                    new Panel(rows)
+                        .Header("[yellow]Recent Log Output[/]")
+                        .BorderColor(Color.Red)
+                        .Expand()
+                );
+            }
+
+            AnsiConsole.MarkupLine($"[red bold]Error:[/] {Markup.Escape(ex.Message)}");
+            
+            if (File.Exists(logFilePath))
+            {
+                AnsiConsole.MarkupLine($"[grey]Full log available at:[/] [blue]{logFilePath}[/]");
+            }
         }
     }
 }

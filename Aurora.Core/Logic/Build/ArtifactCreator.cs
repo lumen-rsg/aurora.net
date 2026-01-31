@@ -33,6 +33,9 @@ public static class ArtifactCreator
             // Recursively add files from pkgDir
             await AddDirectoryToTarRecursive(tar, pkgDir, "");
         }
+        
+        var hash = Aurora.Core.Security.HashHelper.ComputeFileHash(outputPath);
+        manifest.Files.SourceHash = hash;
 
         AnsiConsole.MarkupLine($"[green]✔ Artifact created at {outputPath}[/]");
     }

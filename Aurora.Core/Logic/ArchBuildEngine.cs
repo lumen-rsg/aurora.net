@@ -33,6 +33,8 @@ fullver=""$pkgver-$pkgrel""
 
 echo ""package:""
 echo ""  name: ${pkgname[0]}""
+echo ""  all_names:""
+for n in ""${pkgname[@]}""; do echo ""    - $n""; done # <--- Capture all split names
 echo ""  version: $fullver""
 echo ""  description: ${pkgdesc-}""
 echo ""  architecture: ${arch[0]}""

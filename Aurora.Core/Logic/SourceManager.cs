@@ -8,11 +8,11 @@ public class SourceManager
 {
     private readonly List<IDownloadProvider> _providers = new();
 
-    public SourceManager()
+    public SourceManager(string projectDir) // Accept projectDir
     {
-        _providers.Add(new LocalProvider());
+        _providers.Add(new LocalProvider(projectDir)); // Pass to LocalProvider
         _providers.Add(new HttpProvider());
-        _providers.Add(new GitProvider()); // <--- Registered
+        _providers.Add(new GitProvider());
     }
 
     public async Task FetchSourceAsync(SourceEntry entry, string srcDest, Action<string> onProgress)

@@ -7,15 +7,14 @@ namespace Aurora.Core.Logic;
 
 public class IntegrityManager
 {
-    public void VerifyChecksums(AuroraManifest manifest, string downloadDir)
+    // Added 'startDir' parameter
+    public void VerifyChecksums(AuroraManifest manifest, string downloadDir, string startDir)
     {
         var sources = manifest.Build.Source;
         var sums = manifest.Build.Sha256Sums;
 
-        // If no checksums defined, we skip (or warn in strict mode)
         if (sums.Count == 0) return;
 
-        // Strict array alignment check
         if (sums.Count != sources.Count)
         {
             throw new InvalidDataException(
@@ -29,34 +28,33 @@ public class IntegrityManager
             var expectedSum = sums[i];
             var sourceStr = sources[i];
             var entry = new SourceEntry(sourceStr);
-            var filePath = Path.Combine(downloadDir, entry.FileName);
+
+            // LOGIC FIX: Determine where the file actually is for hashing
+            string filePath = entry.Protocol == "local"
+                ? Path.Combine(startDir, entry.FileName)
+                : Path.Combine(downloadDir, entry.FileName);
 
             AnsiConsole.Markup($"  {entry.FileName} ... ");
 
-            // Logic from verify_checksum.sh: Handle 'SKIP'
             if (expectedSum == "SKIP")
             {
                 AnsiConsole.MarkupLine("[yellow]Skipped[/]");
                 continue;
             }
 
-            // Verify file existence
             if (!File.Exists(filePath))
             {
-                // If it's a directory (VCS repo), we skip hashing for now 
-                // (makepkg usually uses SKIP for VCS, but just in case)
-                // TODO
                 if (Directory.Exists(filePath))
                 {
                     AnsiConsole.MarkupLine("[blue]VCS Repo (Skipped)[/]");
                     continue;
                 }
                 
-                AnsiConsole.MarkupLine("[red]FAILED (File not found)[/]");
+                // Print the path we tried to check for easier debugging
+                AnsiConsole.MarkupLine($"[red]FAILED (File not found at {filePath})[/]");
                 throw new FileNotFoundException($"Source file missing: {entry.FileName}");
             }
 
-            // Compute Hash
             var actualSum = HashHelper.ComputeFileHash(filePath);
 
             if (!string.Equals(expectedSum, actualSum, StringComparison.OrdinalIgnoreCase))

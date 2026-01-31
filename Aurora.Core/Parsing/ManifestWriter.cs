@@ -13,26 +13,48 @@ public static class ManifestWriter
         sb.AppendLine("package:");
         sb.AppendLine($"  name: {m.Package.Name}");
         sb.AppendLine($"  version: {m.Package.Version}");
-        sb.AppendLine($"  description: {m.Package.Description}");
+        // Always quote descriptions as they often contain symbols
+        sb.AppendLine($"  description: \"{Escape(m.Package.Description)}\"");
         sb.AppendLine($"  architecture: {m.Package.Architecture}");
         sb.AppendLine($"  maintainer: {m.Package.Maintainer}");
         sb.AppendLine($"  build_date: {DateTimeOffset.UtcNow.ToUnixTimeSeconds()}");
 
         sb.AppendLine("metadata:");
         sb.AppendLine($"  url: {m.Metadata.Url}");
-        if (m.Metadata.License.Any()) {
-            sb.AppendLine("  license:");
-            foreach (var l in m.Metadata.License) sb.AppendLine($"    - {l}");
-        }
+        WriteList(sb, "  license", m.Metadata.License);
+        WriteList(sb, "  provides", m.Metadata.Provides);
+        WriteList(sb, "  conflicts", m.Metadata.Conflicts);
+        WriteList(sb, "  replaces", m.Metadata.Replaces);
 
         sb.AppendLine("dependencies:");
-        sb.AppendLine("  runtime:");
-        foreach (var d in m.Dependencies.Runtime) sb.AppendLine($"    - {d}");
+        WriteList(sb, "  runtime", m.Dependencies.Runtime);
+        WriteList(sb, "  optional", m.Dependencies.Optional);
 
         sb.AppendLine("files:");
         sb.AppendLine($"  package_size: {m.Files.PackageSize}");
         sb.AppendLine($"  source_hash: {m.Files.SourceHash}");
 
         return sb.ToString();
+    }
+
+    private static void WriteList(StringBuilder sb, string key, List<string> items)
+    {
+        sb.AppendLine($"{key}:");
+        if (items != null)
+        {
+            foreach (var item in items)
+            {
+                if (string.IsNullOrWhiteSpace(item)) continue;
+                // FIX: Always quote list items to prevent colons from being interpreted as keys
+                sb.AppendLine($"    - \"{Escape(item)}\"");
+            }
+        }
+    }
+
+    private static string Escape(string? input)
+    {
+        if (string.IsNullOrEmpty(input)) return "";
+        // Basic YAML escaping for double quotes
+        return input.Replace("\"", "\\\"");
     }
 }

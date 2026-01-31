@@ -6,14 +6,16 @@ namespace Aurora.Core.Security;
 
 public class SignatureVerifier
 {
-    public void VerifySignatures(AuroraManifest manifest, string downloadDir)
+    public void VerifySignatures(AuroraManifest manifest, string downloadDir, string startDir)
     {
         var sources = manifest.Build.Source;
 
         foreach (var sourceStr in sources)
         {
             var entry = new SourceEntry(sourceStr);
-            var filePath = Path.Combine(downloadDir, entry.FileName);
+            string filePath = entry.Protocol == "local"
+                ? Path.Combine(startDir, entry.FileName)
+                : Path.Combine(downloadDir, entry.FileName);
 
             // Case 1: Standard detached signature file (.sig, .asc)
             if (entry.FileName.EndsWith(".sig") || entry.FileName.EndsWith(".asc"))
