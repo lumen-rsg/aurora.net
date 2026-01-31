@@ -6,18 +6,18 @@ namespace Aurora.CLI.Commands;
 public class SyncCommand : ICommand
 {
     public string Name => "sync";
-    public string Description => "Sync repositories";
+    public string Description => "Synchronize repository databases";
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {
-        AnsiConsole.MarkupLine($"[blue]Syncing repositories (Root: {config.SysRoot})...[/]");
-        var repoMgr = new RepoManager(config.SysRoot);
+        AnsiConsole.MarkupLine($"[blue]Synchronizing repositories...[/]");
         
-        // HACK: Property injection or constructor update preferred, 
-        // but let's just use a field in RepoManager for this session.
-        repoMgr.SkipSignatureCheck = config.SkipSig; 
+        var repoMgr = new RepoManager(config.SysRoot)
+        {
+            SkipSignatureCheck = config.SkipGpg // Use the same flag
+        };
 
-        await AnsiConsole.Live(new Table().AddColumn("Repo").AddColumn("Status"))
+        await AnsiConsole.Live(new Table().Border(TableBorder.None).AddColumn("Repository").AddColumn("Status"))
             .StartAsync(async ctx =>
             {
                 var table = new Table().AddColumn("Repository").AddColumn("Status");
@@ -25,13 +25,17 @@ public class SyncCommand : ICommand
 
                 await repoMgr.SyncRepositoriesAsync((name, status) =>
                 {
-                    var color = status.StartsWith("Failed") ? "red" : "green";
-                    if (status == "Downloading...") color = "yellow";
+                    string color = status switch {
+                        var s when s.Contains("Done") => "green",
+                        var s when s.Contains("Failed") => "red",
+                        _ => "yellow"
+                    };
+                    
                     table.AddRow(name, $"[{color}]{status}[/]");
                     ctx.UpdateTarget(table);
                 });
             });
-        
+
         AnsiConsole.MarkupLine("[green]Sync complete.[/]");
     }
 }

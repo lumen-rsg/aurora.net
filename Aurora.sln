@@ -1,6 +1,10 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Aurora", "Aurora\Aurora.csproj", "{4560AF4B-3433-4816-9619-8A8D6B7A379B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Aurora.RepoTool", "Aurora.RepoTool\Aurora.RepoTool.csproj", "{4BCC7531-80B2-45AB-B7DE-6DC131B87582}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Aurora.Core", "Aurora.Core\Aurora.Core.csproj", "{ADFB8034-823C-4646-9A9E-A09548636B31}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Aurora.CLI", "Aurora.CLI\Aurora.CLI.csproj", "{5B35EECB-CFE8-4DB8-A50D-10A55DA31BE6}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -8,9 +12,19 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{4560AF4B-3433-4816-9619-8A8D6B7A379B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{4560AF4B-3433-4816-9619-8A8D6B7A379B}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{4560AF4B-3433-4816-9619-8A8D6B7A379B}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{4560AF4B-3433-4816-9619-8A8D6B7A379B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4BCC7531-80B2-45AB-B7DE-6DC131B87582}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4BCC7531-80B2-45AB-B7DE-6DC131B87582}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4BCC7531-80B2-45AB-B7DE-6DC131B87582}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4BCC7531-80B2-45AB-B7DE-6DC131B87582}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ADFB8034-823C-4646-9A9E-A09548636B31}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ADFB8034-823C-4646-9A9E-A09548636B31}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ADFB8034-823C-4646-9A9E-A09548636B31}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ADFB8034-823C-4646-9A9E-A09548636B31}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5B35EECB-CFE8-4DB8-A50D-10A55DA31BE6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5B35EECB-CFE8-4DB8-A50D-10A55DA31BE6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5B35EECB-CFE8-4DB8-A50D-10A55DA31BE6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5B35EECB-CFE8-4DB8-A50D-10A55DA31BE6}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
 	EndGlobalSection
 EndGlobal

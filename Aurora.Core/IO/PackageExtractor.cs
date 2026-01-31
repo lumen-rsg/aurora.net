@@ -38,4 +38,26 @@ public static class PackageExtractor
 
         throw new InvalidDataException("Package is missing 'aurora.meta' or '.AURORA_META'");
     }
+    
+    public static List<string> GetFileList(string packagePath)
+    {
+        var files = new List<string>();
+        using var fs = File.OpenRead(packagePath);
+        using var gz = new GZipStream(fs, CompressionMode.Decompress);
+        using var tar = new TarReader(gz);
+
+        while (tar.GetNextEntry() is { } entry)
+        {
+            var name = entry.Name.Replace('\\', '/');
+            if (name.StartsWith("./")) name = name.Substring(2);
+
+            // Ignore the same metadata files we ignore during install
+            var fileName = Path.GetFileName(name);
+            if (string.IsNullOrEmpty(fileName) || name.Contains(".AURORA_") || name == "aurora.meta" || name == ".INSTALL")
+                continue;
+
+            files.Add("/" + name.TrimStart('/'));
+        }
+        return files;
+    }
 }

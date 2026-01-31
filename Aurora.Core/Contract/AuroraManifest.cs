@@ -81,6 +81,14 @@ public class BuildSection
     
     public string Directory { get; set; } = string.Empty;
     public string SourceDirectory { get; set; } = string.Empty;
+    
+    // NEW: Source files (URLs or filenames)
+    public List<string> Source { get; set; } = new();
+    
+    // NEW: Integrity checks (we focus on sha256 for now)
+    public List<string> Sha256Sums { get; set; } = new();
+    
+    public List<string> NoExtract { get; set; } = new(); // NEW
 }
 
 /// <summary>

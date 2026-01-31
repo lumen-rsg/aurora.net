@@ -48,8 +48,8 @@ public static class ManifestParser
             {
                 if (currentList != null)
                 {
-                    var value = line.Substring(2).Trim();
-                    // Handle "!flag" syntax in build options if needed, but for now just store string
+                    // FIX: Trim spaces AND quotes
+                    var value = line.Substring(2).Trim().Trim('"').Trim('\'');
                     if (!string.IsNullOrEmpty(value)) 
                     {
                         currentList.Add(value);
@@ -62,7 +62,7 @@ public static class ManifestParser
             // Expect format "key: value" OR "key:" (start of list)
             var parts = line.Split(':', 2);
             var keyName = parts[0].Trim();
-            var valPart = parts.Length > 1 ? parts[1].Trim() : "";
+            var valPart = parts.Length > 1 ? parts[1].Trim().Trim('"').Trim('\'') : "";
 
             // If value is empty, this might be the start of a list (e.g. "runtime:")
             if (string.IsNullOrEmpty(valPart))
@@ -109,6 +109,9 @@ public static class ManifestParser
                 {
                     "environment" => m.Build.Environment,
                     "options" => m.Build.Options,
+                    "source" => m.Build.Source,       // <--- NEW
+                    "sha256sums" => m.Build.Sha256Sums, // <--- NEW
+                    "noextract" => m.Build.NoExtract,
                     _ => null
                 };
         }
