@@ -84,27 +84,30 @@ public class ArchBuildProvider : IBuildProvider
         // Pass the logAction to the execution manager
         await exec.RunBuildFunctionAsync("prepare", logAction);
         await exec.RunBuildFunctionAsync("build", logAction);
+        
+        if (manifest.Build.Environment.Contains("check"))
+            await exec.RunBuildFunctionAsync("check", logAction);
 
-        // --- NEW: SPLIT PACKAGING LOOP ---
-        var packageNames = manifest.Package.AllNames.Count > 0 
+        // 2. Run fakeroot-space functions and create artifacts
+        var packageNames = manifest.Package.AllNames.Any() 
             ? manifest.Package.AllNames 
             : new List<string> { manifest.Package.Name };
 
         foreach (var name in packageNames)
         {
-            AnsiConsole.MarkupLine($"[bold magenta]Package Phase:[/] [white]{name}[/]");
+            AnsiConsole.MarkupLine($"[bold magenta]Packaging Phase:[/] [white]{name}[/]");
             
-            // 1. Determine function name (package() or package_foo())
             string funcName = packageNames.Count > 1 || name != manifest.Package.Name 
                 ? $"package_{name}" 
                 : "package";
 
-            // 2. Run function and capture overrides
+            // Use the fakeroot-enabled method
             var subManifest = await exec.RunPackageFunctionAsync(funcName, manifest, logAction);
 
-            // 3. Create Artifact for this specific sub-package
             var subPkgDir = Path.Combine(absoluteBuildDir, "pkg", name);
             await ArtifactCreator.CreateAsync(subManifest, subPkgDir, absoluteStartDir);
         }
+
+        AnsiConsole.MarkupLine("[green bold]Build process completed successfully![/]");
     }
 }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using Aurora.Core.Contract;
+using Aurora.Core.Logic.Build;
 using Aurora.Core.Parsing;
 using Spectre.Console;
 
@@ -195,11 +196,14 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
             WorkingDirectory = _srcDir
         };
         psi.Arguments = $"-c \"{shim.Replace("\"", "\\\"")}\"";
+        
+        var finalPsi = FakerootHelper.WrapInFakeroot(psi);
+        AnsiConsole.MarkupLine("[grey]=> Entering fakeroot environment...[/]");
 
         var overrideYaml = new StringBuilder();
         bool captureMetadata = false;
 
-        using var process = Process.Start(psi);
+        using var process = Process.Start(finalPsi);
         process.OutputDataReceived += (_, args) => {
             if (args.Data == null) return;
             if (args.Data == "---AURORA_OVERRIDE_START---") { captureMetadata = true; return; }

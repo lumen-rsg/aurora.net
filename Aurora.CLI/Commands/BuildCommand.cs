@@ -1,7 +1,7 @@
-using Aurora.CLI;
 using Aurora.Core.Logic;
 using Aurora.Core.Logic.Providers;
 using Spectre.Console;
+using Aurora.Core.IO; 
 
 namespace Aurora.CLI.Commands;
 
@@ -12,6 +12,15 @@ public class BuildCommand : ICommand
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            if (Syscall.geteuid() == 0)
+            {
+                DisplayRootWarning();
+                // We exit immediately to prevent any further action.
+                return;
+            }
+        }
         
         // 1. Determine build directory (default to current '.')
         string targetPath = args.Length > 0 ? Path.GetFullPath(args[0]) : Directory.GetCurrentDirectory();
@@ -113,5 +122,45 @@ public class BuildCommand : ICommand
                 AnsiConsole.MarkupLine($"[grey]Full log available at:[/] [blue]{logFilePath}[/]");
             }
         }
+    }
+    
+    private void DisplayRootWarning()
+    {
+        AnsiConsole.Write(new FigletText("Hold Up!").Centered().Color(Color.Red));
+        
+        var warningText = new Markup(
+            "[bold yellow]Heya![/]\n\n" +
+            "You are trying to build a package as [red bold]root[/]!\n" +
+            "This is a [underline red]BAAAD[/] behavior! :sheep:\n\n" +
+            "Running build scripts with superuser privileges can [invert]permanently and catastrophically[/] damage your system. " +
+            "A rogue script could wipe your hard drive, steal your data, or turn your computer into a toaster. " +
+            "You don't want a toaster, do you?\n"
+        );
+        
+        var footerText = new Markup(
+            "[grey]Aurora's build system uses [blue]fakeroot[/] to handle file ownership correctly without needing real root access.\n" +
+            "Please run this command as a regular user.[/]"
+        );
+
+        // --- THE FIX ---
+        // Create a visual separator to act as the footer line
+        var separator = new Rule().RuleStyle("grey");
+
+        // Combine the main content, separator, and footer into a single renderable layout
+        var panelContent = new Rows(
+            warningText,
+            separator,
+            footerText
+        );
+        // -----------------
+
+        // Pass the combined content object to the Panel constructor
+        var panel = new Panel(panelContent)
+            .Header("[bold red] SECURITY ALERT [/]", Justify.Center)
+            .Border(BoxBorder.Double)
+            .BorderColor(Color.Red)
+            .Padding(2, 2);
+            
+        AnsiConsole.Write(panel);
     }
 }
