@@ -38,10 +38,12 @@ for n in ""${pkgname[@]}""; do echo ""    - $n""; done # <--- Capture all split 
 echo ""  version: $fullver""
 echo ""  description: ${pkgdesc-}""
 echo ""  architecture: ${arch[0]}""
-echo ""  maintainer: ${packager-}""
+echo ""  maintainer: ${PACKAGER:-Unknown Packager}""
 
 echo ""metadata:""
 echo ""  url: ${url-}""
+echo ""  license:""
+for l in ""${license[@]-}""; do [[ -n ""$l"" ]] && echo ""    - $l""; done
 
 echo ""dependencies:""
 echo ""  runtime:""

@@ -163,11 +163,16 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
                 {functionName}
             fi
 
-            echo ""---AURORA_OVERRIDE_START---""
-            echo ""package:""
-            echo ""  description: $pkgdesc""
-            echo ""metadata:""
-            echo ""  provides:""
+            echo """"---AURORA_OVERRIDE_START---""""
+            echo """"package:""""
+            echo """"  description: $pkgdesc""""
+            # Capture split-package maintainer if defined
+            echo """"  maintainer: ${{PACKAGER:-Unknown Packager}}"""" 
+
+            echo """"metadata:""""
+            echo """"  license:""""
+            for l in """"${{{{license[@]-}}}}""""; do [[ -n """"$l"""" ]] && echo """"    - $l""""; done
+            echo """"  provides:""""
             for x in ""${{provides[@]-}}""; do [[ -n ""$x"" ]] && echo ""    - $x""; done
             echo ""  conflicts:""
             for x in ""${{conflicts[@]-}}""; do [[ -n ""$x"" ]] && echo ""    - $x""; done
@@ -222,6 +227,10 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
     private void ApplyOverrides(AuroraManifest target, AuroraManifest source)
     {
         if (!string.IsNullOrEmpty(source.Package.Description)) target.Package.Description = source.Package.Description;
+        if (!string.IsNullOrEmpty(source.Package.Maintainer)) target.Package.Maintainer = source.Package.Maintainer;
+
+        // Update licenses if specifically defined in the sub-function
+        if (source.Metadata.License.Count > 0) target.Metadata.License = source.Metadata.License;
         
         // Only override lists if the sub-function actually defined them
         if (source.Metadata.Provides.Count > 0) target.Metadata.Provides = source.Metadata.Provides;

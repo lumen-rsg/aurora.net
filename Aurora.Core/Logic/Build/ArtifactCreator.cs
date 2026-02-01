@@ -12,6 +12,13 @@ public static class ArtifactCreator
     {
         string fileName = $"{manifest.Package.Name}-{manifest.Package.Version}-{manifest.Package.Architecture}.au";
         string outputPath = Path.Combine(outputDir, fileName);
+        
+        // 1. Resolve Source Hash from the manifest's build section
+        // We use the first checksum from the PKGBUILD as the source_hash identity
+        if (string.IsNullOrEmpty(manifest.Files.SourceHash) && manifest.Build.Sha256Sums.Count > 0)
+        {
+            manifest.Files.SourceHash = manifest.Build.Sha256Sums[0];
+        }
 
         AnsiConsole.MarkupLine($"[bold]Compressing artifact:[/] [cyan]{fileName}[/]");
 
@@ -33,9 +40,6 @@ public static class ArtifactCreator
             // Recursively add files from pkgDir
             await AddDirectoryToTarRecursive(tar, pkgDir, "");
         }
-        
-        var hash = Aurora.Core.Security.HashHelper.ComputeFileHash(outputPath);
-        manifest.Files.SourceHash = hash;
 
         AnsiConsole.MarkupLine($"[green]✔ Artifact created at {outputPath}[/]");
     }
