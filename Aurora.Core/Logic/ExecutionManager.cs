@@ -176,6 +176,8 @@ public class ExecutionManager
         // Autoconf's configure script requires M4 to be an absolute path or it fails validation
         // We look for it in the sanitized paths.
         string? m4Path = FindExecutable("m4", requiredPaths);
+        string? texi2pdfPath = FindExecutable("texi2pdf", requiredPaths);
+        string? perlPath = FindExecutable("perl", requiredPaths);
         if (!string.IsNullOrEmpty(m4Path))
         {
             psi.Environment["M4"] = m4Path;
@@ -184,6 +186,24 @@ public class ExecutionManager
         {
             // Fallback if we can't find it (unlikely on Linux)
             psi.Environment["M4"] = "/usr/bin/m4";
+        }
+        
+        if(!string.IsNullOrEmpty(texi2pdfPath))
+        {
+            psi.Environment["texi2pdf"] = texi2pdfPath;
+        }
+        else
+        {
+            psi.Environment["texi2pdf"] = "/usr/bin/texi2pdf";
+        }
+
+        if (!string.IsNullOrEmpty(perlPath))
+        {
+            psi.Environment["perl"] = perlPath;
+        }
+        else
+        {
+            psi.Environment["perl"] = "/usr/bin/perl";
         }
     }
 
