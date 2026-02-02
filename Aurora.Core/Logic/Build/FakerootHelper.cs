@@ -35,15 +35,17 @@ public static class FakerootHelper
             return originalPsi;
         }
 
-        // The magic: fakeroot -- bash -c "original command"
         var fakerootPsi = new ProcessStartInfo
         {
             FileName = "fakeroot",
-            // Pass '--' to fakeroot to signal end of its options
-            // Then pass the original binary and its arguments
+            // Pass -- to signal end of fakeroot args
             Arguments = $"-- \"{originalPsi.FileName}\" {originalPsi.Arguments}",
+            
+            // FIX: Ensure all redirections are copied from the original PSI
+            RedirectStandardInput = originalPsi.RedirectStandardInput, 
             RedirectStandardOutput = originalPsi.RedirectStandardOutput,
             RedirectStandardError = originalPsi.RedirectStandardError,
+            
             UseShellExecute = false,
             CreateNoWindow = true,
             WorkingDirectory = originalPsi.WorkingDirectory

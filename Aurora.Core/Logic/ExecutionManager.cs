@@ -179,6 +179,9 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
 
         var psi = new ProcessStartInfo {
             FileName = "/bin/bash",
+            // Arguments: -s tells bash to read the script from Stdin
+            Arguments = "-s -- " + pkgbuildPath,
+            RedirectStandardInput = true,  // <--- CRITICAL: Set this to true
             RedirectStandardOutput = true, 
             RedirectStandardError = true,
             UseShellExecute = false, 
