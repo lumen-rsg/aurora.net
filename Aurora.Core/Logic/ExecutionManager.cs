@@ -142,9 +142,12 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
         Directory.CreateDirectory(subPkgDir);
 
         var pkgbuildPath = Path.Combine(_startDir, "PKGBUILD");
+        var logFile = Path.Combine(_buildDir, "build.log");
 
-        // We build the shim using a StringBuilder to avoid C# interpolation collisions with Bash braces
+        // --- NEW STRATEGY: Write shim to a temporary file ---
+        var shimPath = Path.Combine(subPkgDir, "aurora_shim.sh");
         var shim = new StringBuilder();
+        shim.AppendLine("#!/bin/bash");
         shim.AppendLine("msg() { :; }; msg2() { :; }; warning() { :; }; error() { :; }");
         shim.AppendLine($"export srcdir='{_srcDir}'");
         shim.AppendLine($"export pkgdir='{subPkgDir}'");
@@ -152,10 +155,8 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
         shim.AppendLine($"export startdir='{_startDir}'");
         shim.AppendLine($"source '{pkgbuildPath}'");
         
-        // Execute the function
         shim.AppendLine($"if type -t \"{functionName}\" &>/dev/null; then cd \"$srcdir\" && \"{functionName}\"; fi");
 
-        // Use a robust Bash helper for dumping metadata that handles empty arrays safely
         shim.AppendLine("print_meta_arr() {");
         shim.AppendLine("  local key=$1; local var=\"${1}[@]\"; echo \"  $key:\"");
         shim.AppendLine("  for x in \"${!var}\"; do [[ -n \"$x\" ]] && printf \"    - \\\"%s\\\"\\n\" \"$x\"; done");
@@ -174,14 +175,20 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
         shim.AppendLine("print_meta_arr \"optdepends\"");
         shim.AppendLine("echo '---AURORA_OVERRIDE_END---'");
 
+        File.WriteAllText(shimPath, shim.ToString());
+        
+        // Ensure the shim is executable
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            File.SetUnixFileMode(shimPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
         var newManifest = CloneManifest(baseManifest);
         newManifest.Package.Name = subPkgName;
 
         var psi = new ProcessStartInfo {
             FileName = "/bin/bash",
-            // Arguments: -s tells bash to read the script from Stdin
-            Arguments = "-s -- " + pkgbuildPath,
-            RedirectStandardInput = true,  // <--- CRITICAL: Set this to true
+            Arguments = $"\"{shimPath}\"", // Execute the shim file
             RedirectStandardOutput = true, 
             RedirectStandardError = true,
             UseShellExecute = false, 
@@ -189,14 +196,7 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
             WorkingDirectory = _srcDir
         };
         
-        // Wrap in fakeroot
         var finalPsi = FakerootHelper.WrapInFakeroot(psi);
-        finalPsi.Arguments = "-c \"" + shim.ToString().Replace("\"", "\\\"").Replace("$", "\\$") + "\"";
-        
-        // Note: We MUST escape $ so the C# side doesn't try to evaluate it, 
-        // but since we are using StringBuilder instead of interpolated string, 
-        // we can just pass the string as-is.
-        finalPsi.Arguments = "-s -- " + pkgbuildPath; // Read script from Stdin
 
         var overrideYaml = new StringBuilder();
         bool captureMetadata = false;
@@ -204,35 +204,39 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
         using var process = Process.Start(finalPsi);
         if (process == null) throw new Exception("Failed to start packaging process.");
 
-        // Pipe the shim script into bash stdin
-        await process.StandardInput.WriteAsync(shim.ToString());
-        process.StandardInput.Close();
+        void HandleData(string? data)
+        {
+            if (data == null) return;
+            // Write everything to the persistent log file
+            File.AppendAllText(logFile, data + Environment.NewLine);
 
-        process.OutputDataReceived += (_, args) => {
-            if (args.Data == null) return;
-            if (args.Data.Trim() == "---AURORA_OVERRIDE_START---") { captureMetadata = true; return; }
-            if (args.Data.Trim() == "---AURORA_OVERRIDE_END---") { captureMetadata = false; return; }
+            var trimmed = data.Trim();
+            if (trimmed == "---AURORA_OVERRIDE_START---") { captureMetadata = true; return; }
+            if (trimmed == "---AURORA_OVERRIDE_END---") { captureMetadata = false; return; }
 
-            if (captureMetadata) overrideYaml.AppendLine(args.Data);
-            else logAction?.Invoke(args.Data);
-        };
-        
-        process.ErrorDataReceived += (_, args) => {
-            if (args.Data != null) logAction?.Invoke(args.Data);
-        };
+            if (captureMetadata) overrideYaml.AppendLine(data);
+            else logAction?.Invoke(data);
+        }
+
+        process.OutputDataReceived += (_, args) => HandleData(args.Data);
+        process.ErrorDataReceived += (_, args) => HandleData(args.Data);
 
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         await process.WaitForExitAsync();
 
+        // Cleanup the temporary shim
+        try { File.Delete(shimPath); } catch { }
+
+        if (process.ExitCode != 0)
+        {
+            throw new Exception($"Packaging function '{functionName}' failed with exit code {process.ExitCode}.");
+        }
+
         if (overrideYaml.Length > 0)
         {
-            try {
-                var overrides = ManifestParser.Parse(overrideYaml.ToString());
-                ApplyOverrides(newManifest, overrides);
-            } catch (Exception ex) {
-                AuLogger.Error($"Failed to parse metadata overrides: {ex.Message}");
-            }
+            var overrides = ManifestParser.Parse(overrideYaml.ToString());
+            ApplyOverrides(newManifest, overrides);
         }
 
         return newManifest;

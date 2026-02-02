@@ -125,20 +125,24 @@ public class ArchBuildProvider : IBuildProvider
 
         foreach (var name in packageNames)
         {
-            AnsiConsole.MarkupLine($"\n[bold magenta]Packaging Phase:[/] [white]{name}[/]");
+            try 
+            {
+                AnsiConsole.MarkupLine($"\n[bold magenta]Packaging Phase:[/] [white]{name}[/]");
             
-            // Determine function name: 'package' for single, 'package_name' for split
-            string funcName = (packageNames.Count > 1 || name != manifest.Package.Name) 
-                ? $"package_{name}" 
-                : "package";
+                string funcName = (packageNames.Count > 1 || name != manifest.Package.Name) 
+                    ? $"package_{name}" 
+                    : "package";
 
-            // Execute package function in fakeroot and capture metadata overrides
-            var subManifest = await exec.RunPackageFunctionAsync(funcName, manifest, logAction);
+                var subManifest = await exec.RunPackageFunctionAsync(funcName, manifest, logAction);
 
-            // 9. Final Artifact Creation
-            // Compress the specific subPkgDir into the final .au file
-            var subPkgDir = Path.Combine(absoluteBuildDir, "pkg", name);
-            await ArtifactCreator.CreateAsync(subManifest, subPkgDir, absoluteStartDir);
+                var subPkgDir = Path.Combine(absoluteBuildDir, "pkg", name);
+                await ArtifactCreator.CreateAsync(subManifest, subPkgDir, absoluteStartDir);
+            }
+            catch (Exception ex)
+            {
+                // Re-throw to be caught by the BuildCommand's UI handler
+                throw new Exception($"Failed to package '{name}': {ex.Message}");
+            }
         }
 
         AnsiConsole.MarkupLine("\n[green bold]✔ Build process completed successfully![/]");
