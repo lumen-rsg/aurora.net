@@ -46,12 +46,38 @@ public class ExecutionManager
     {
         AnsiConsole.MarkupLine($"[cyan]=> Running {functionName}()...[/]");
 
-        // Path for the log file
         var logFile = Path.Combine(_buildDir, "build.log");
+        var shimPath = Path.Combine(_srcDir, $"aurora_{functionName}_shim.sh");
+        
+        var shim = new StringBuilder();
+        shim.AppendLine("#!/bin/bash");
+        shim.AppendLine("set -e");
+        
+        // Export variables for the script
+        shim.AppendLine($"export srcdir='{_srcDir}'");
+        shim.AppendLine($"export pkgdir='{_pkgDir}'");
+        shim.AppendLine($"export startdir='{_startDir}'");
+        
+        // Helpers
+        shim.AppendLine("msg() { echo \"  -> $1\"; }; msg2() { echo \"    $1\"; }; warning() { echo \"  -> WARNING: $1\" >&2; }; error() { echo \"  -> ERROR: $1\" >&2; }");
+        
+        shim.AppendLine($"source '{Path.Combine(_startDir, "PKGBUILD")}'");
+        
+        shim.AppendLine($"if type -t {functionName} &>/dev/null; then");
+        shim.AppendLine($"    cd \"$srcdir\"");
+        shim.AppendLine($"    {functionName}");
+        shim.AppendLine("fi");
+
+        File.WriteAllText(shimPath, shim.ToString());
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            File.SetUnixFileMode(shimPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
 
         var psi = new ProcessStartInfo
         {
             FileName = "/bin/bash",
+            Arguments = $"--noprofile --norc \"{shimPath}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -59,31 +85,22 @@ public class ExecutionManager
             WorkingDirectory = _srcDir
         };
 
+        // 1. Setup Environment (Sets PATH, LC_ALL, and M4)
         ConfigureEnvironment(psi);
+        
+        // 2. Ensure CONFIG_SHELL is set (Autoconf needs this to be consistent)
+        psi.Environment["CONFIG_SHELL"] = "/bin/bash";
 
-        var pkgbuildPath = Path.Combine(_startDir, "PKGBUILD");
-        var shim = $@"
-            export srcdir='{_srcDir}'
-            export pkgdir='{_pkgDir}'
-            export startdir='{_startDir}'
-            source '{pkgbuildPath}'
-            if type -t {functionName} &>/dev/null; then
-                cd ""$srcdir""
-                {functionName}
-            fi";
-
-        psi.Arguments = $"-c \"{shim.Replace("\"", "\\\"")}\"";
+        // DELETE THIS BLOCK IF IT EXISTS IN YOUR FILE:
+        // if (psi.Environment.ContainsKey("M4")) psi.Environment.Remove("M4");  <-- DELETE THIS
 
         using var process = Process.Start(psi);
         if (process == null) throw new Exception($"Failed to start process for {functionName}");
 
-        // Use a Thread-safe way to append to the log file
         void LogToFile(string? data)
         {
             if (data == null) return;
             onLineReceived?.Invoke(data);
-            
-            // Append to build.log
             File.AppendAllText(logFile, data + Environment.NewLine);
         }
 
@@ -95,9 +112,10 @@ public class ExecutionManager
         
         await process.WaitForExitAsync();
 
+        try { File.Delete(shimPath); } catch {}
+
         if (process.ExitCode != 0)
         {
-            // Throw a specific exception that includes the log path
             throw new Exception($"Function '{functionName}' failed with exit code {process.ExitCode}. See {logFile} for details.");
         }
     }
@@ -108,6 +126,11 @@ public class ExecutionManager
         psi.Environment["pkgdir"] = _pkgDir;
         psi.Environment["startdir"] = _startDir;
         
+        // --- FIX 1: Enforce Standard Locale (C) ---
+        // This ensures tool output is English, which configure scripts rely on for parsing.
+        psi.Environment["LC_ALL"] = "C";
+        psi.Environment["LANG"] = "C";
+
         // --- Flags ---
         var cflags = _sysConfig.CFlags;
         var cxxflags = _sysConfig.CxxFlags;
@@ -126,42 +149,50 @@ public class ExecutionManager
         psi.Environment["LDFLAGS"] = _sysConfig.LdFlags;
         psi.Environment["MAKEFLAGS"] = _sysConfig.MakeFlags;
         
-        // --- FIX: PATH Sanitization ---
-        // Ensure we include standard system paths + user paths + compiler cache paths
+        // --- PATH Sanitization ---
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
-        
-        // Standard paths required for build tools (m4, make, gcc, etc.)
         var requiredPaths = new List<string> 
         { 
-            "/usr/local/bin", 
-            "/usr/bin", 
-            "/bin", 
-            "/usr/local/sbin", 
-            "/usr/sbin", 
-            "/sbin" 
+            "/usr/local/bin", "/usr/bin", "/bin", 
+            "/usr/local/sbin", "/usr/sbin", "/sbin" 
         };
 
-        // If ccache is enabled, prepend its path
         if (_manifest.Build.Environment.Contains("ccache"))
         {
             requiredPaths.Insert(0, "/usr/lib/ccache/bin");
         }
 
-        // Merge with existing PATH (avoiding duplicates)
         var existingParts = currentPath.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
         foreach (var part in existingParts)
         {
-            if (!requiredPaths.Contains(part))
-            {
-                requiredPaths.Add(part);
-            }
+            if (!requiredPaths.Contains(part)) requiredPaths.Add(part);
         }
 
-        // Set the robust PATH
         psi.Environment["PATH"] = string.Join(Path.PathSeparator, requiredPaths);
-        
-        // Debug logging (optional, helps verify fix)
-        // AnsiConsole.MarkupLine($"[grey]DEBUG: Build PATH is {psi.Environment["PATH"]}[/]");
+
+        // --- FIX 2: Explicitly set M4 to absolute path ---
+        // Autoconf's configure script requires M4 to be an absolute path or it fails validation
+        // We look for it in the sanitized paths.
+        string? m4Path = FindExecutable("m4", requiredPaths);
+        if (!string.IsNullOrEmpty(m4Path))
+        {
+            psi.Environment["M4"] = m4Path;
+        }
+        else
+        {
+            // Fallback if we can't find it (unlikely on Linux)
+            psi.Environment["M4"] = "/usr/bin/m4";
+        }
+    }
+
+    private string? FindExecutable(string name, List<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            var fullPath = Path.Combine(path, name);
+            if (File.Exists(fullPath)) return fullPath;
+        }
+        return null;
     }
     
 public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, AuroraManifest baseManifest, Action<string>? logAction = null)
