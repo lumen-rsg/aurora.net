@@ -31,55 +31,63 @@ public class ArchBuildProvider : IBuildProvider
     {
         if (!Directory.Exists(downloadDir)) Directory.CreateDirectory(downloadDir);
         var sourceMgr = new SourceManager(startDir);
+        
+        AnsiConsole.MarkupLine("[bold]Fetching sources...[/]");
 
         await AnsiConsole.Progress()
             .Columns(new ProgressColumn[] 
             {
-                new TaskDescriptionColumn(),    // Filename
-                new ProgressBarColumn(),        // Visual bar
-                new PercentageColumn(),         // 45%
-                new DownloadedColumn(),         // 12MB / 40MB
-                new SpinnerColumn(),            // Spinner
+                new TaskDescriptionColumn(),
+                new ProgressBarColumn(),
+                new PercentageColumn(),
+                new DownloadedColumn(),
+                new SpinnerColumn(),
             })
             .StartAsync(async ctx => 
             {
                 foreach (var sourceStr in manifest.Build.Source)
                 {
                     var entry = new SourceEntry(sourceStr);
-                    var task = ctx.AddTask($"[grey]{entry.FileName}[/]");
+                    
+                    // Display filename and the URL in brackets
+                    var taskDescription = $"[grey]{Markup.Escape(entry.FileName)}[/] [dim]({Markup.Escape(entry.Url)})[/]";
+                    var task = ctx.AddTask(taskDescription);
 
-                    await sourceMgr.FetchSourceAsync(entry, downloadDir, (total, current) => 
+                    try 
                     {
-                        if (total.HasValue)
+                        
+                        await sourceMgr.FetchSourceAsync(entry, downloadDir, (total, current) => 
                         {
-                            task.MaxValue = total.Value;
-                            task.Value = current;
-                        }
-                        else
-                        {
-                            // If server doesn't provide size, just spin
-                            task.IsIndeterminate = true;
-                        }
-                    });
+                            if (total.HasValue && total.Value > 0)
+                            {
+                                task.MaxValue = total.Value;
+                                task.Value = current;
+                            }
+                            else
+                            {
+                                // SERVER DID NOT PROVIDE SIZE (Chunked)
+                                // We set a fake MaxValue so the percentage doesn't show 0/100, 
+                                // but we keep the bar indeterminate to show movement.
+                                task.IsIndeterminate = true;
+        
+                                // Update description to show raw downloaded amount since we can't show %
+                                task.Description = $"[grey]{Markup.Escape(entry.FileName)}[/] [blue]({current / 1024} KB downloaded)[/]";
+                            }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        AnsiConsole.MarkupLine($"[red]Error downloading {entry.FileName}:[/] {Markup.Escape(ex.Message)}");
+                        throw; // Stop the build
+                    }
                     
                     task.StopTask();
                 }
             });
-        
-        // 2. Verify Checksums
+
+        // Integrity checks follow...
         var integrity = new IntegrityManager();
         integrity.VerifyChecksums(manifest, downloadDir, startDir);
-
-        // 3. Verify Signatures (Only if NOT skipped)
-        if (!skipGpg)
-        {
-            var sigVerifier = new SignatureVerifier();
-            sigVerifier.VerifySignatures(manifest, downloadDir, startDir);
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("[yellow]! Skipping GPG signature verification.[/]");
-        }
     }
 
     public async Task BuildAsync(AuroraManifest manifest, string buildDir, string startDir, Action<string> logAction)

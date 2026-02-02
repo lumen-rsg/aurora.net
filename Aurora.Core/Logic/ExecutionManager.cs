@@ -108,17 +108,14 @@ public class ExecutionManager
         psi.Environment["pkgdir"] = _pkgDir;
         psi.Environment["startdir"] = _startDir;
         
-        // Use the system's actual build flags
+        // --- Flags ---
         var cflags = _sysConfig.CFlags;
         var cxxflags = _sysConfig.CxxFlags;
 
-        // If 'debug' is in options, append the debug flags
         if (_manifest.Build.Options.Contains("debug"))
         {
             cflags += " " + _sysConfig.DebugCFlags;
             cxxflags += " " + _sysConfig.DebugCxxFlags;
-            
-            // Add the path remapping needed for debug symbols
             var map = $"-ffile-prefix-map={_srcDir}=/usr/src/debug/{_manifest.Package.Name}";
             cflags += " " + map;
             cxxflags += " " + map;
@@ -129,8 +126,42 @@ public class ExecutionManager
         psi.Environment["LDFLAGS"] = _sysConfig.LdFlags;
         psi.Environment["MAKEFLAGS"] = _sysConfig.MakeFlags;
         
-        // Pass PATH
-        psi.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH");
+        // --- FIX: PATH Sanitization ---
+        // Ensure we include standard system paths + user paths + compiler cache paths
+        var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+        
+        // Standard paths required for build tools (m4, make, gcc, etc.)
+        var requiredPaths = new List<string> 
+        { 
+            "/usr/local/bin", 
+            "/usr/bin", 
+            "/bin", 
+            "/usr/local/sbin", 
+            "/usr/sbin", 
+            "/sbin" 
+        };
+
+        // If ccache is enabled, prepend its path
+        if (_manifest.Build.Environment.Contains("ccache"))
+        {
+            requiredPaths.Insert(0, "/usr/lib/ccache/bin");
+        }
+
+        // Merge with existing PATH (avoiding duplicates)
+        var existingParts = currentPath.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var part in existingParts)
+        {
+            if (!requiredPaths.Contains(part))
+            {
+                requiredPaths.Add(part);
+            }
+        }
+
+        // Set the robust PATH
+        psi.Environment["PATH"] = string.Join(Path.PathSeparator, requiredPaths);
+        
+        // Debug logging (optional, helps verify fix)
+        // AnsiConsole.MarkupLine($"[grey]DEBUG: Build PATH is {psi.Environment["PATH"]}[/]");
     }
     
 public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, AuroraManifest baseManifest, Action<string>? logAction = null)
