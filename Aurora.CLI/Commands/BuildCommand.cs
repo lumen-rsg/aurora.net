@@ -59,7 +59,7 @@ public class BuildCommand : ICommand
             // 4. Phase 2: Fetch Sources
             // We use a folder inside the project for persistent source caching (SRCDEST)
             string downloadDir = Path.Combine(targetPath, "SRCDEST");
-            await provider.FetchSourcesAsync(manifest, downloadDir, config.SkipGpg, targetPath);
+            await provider.FetchSourcesAsync(manifest, downloadDir, config.SkipGpg, config.SkipDownload, targetPath);
 
             // 5. Phase 3: Execute Build
             // We create a temporary build isolation folder

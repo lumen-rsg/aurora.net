@@ -27,35 +27,35 @@ public class ArchBuildProvider : IBuildProvider
         return manifest;
     }
 
-    public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, string startDir)
+    public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, bool skipDownload, string startDir)
     {
         if (!Directory.Exists(downloadDir)) Directory.CreateDirectory(downloadDir);
-        var sourceMgr = new SourceManager(startDir);
-        
-        AnsiConsole.MarkupLine("[bold]Fetching sources...[/]");
 
-        await AnsiConsole.Progress()
-            .Columns(new ProgressColumn[] 
-            {
-                new TaskDescriptionColumn(),
-                new ProgressBarColumn(),
-                new PercentageColumn(),
-                new DownloadedColumn(),
-                new SpinnerColumn(),
-            })
-            .StartAsync(async ctx => 
-            {
-                foreach (var sourceStr in manifest.Build.Source)
+        if (skipDownload)
+        {
+            AnsiConsole.MarkupLine("[yellow]Skipping download phase (using cached sources).[/]");
+        }
+        else
+        {
+            var sourceMgr = new SourceManager(startDir);
+            AnsiConsole.MarkupLine("[bold]Fetching sources...[/]");
+
+            await AnsiConsole.Progress()
+                .Columns(new ProgressColumn[] 
                 {
-                    var entry = new SourceEntry(sourceStr);
-                    
-                    // Display filename and the URL in brackets
-                    var taskDescription = $"[grey]{Markup.Escape(entry.FileName)}[/] [dim]({Markup.Escape(entry.Url)})[/]";
-                    var task = ctx.AddTask(taskDescription);
-
-                    try 
+                    new TaskDescriptionColumn(),
+                    new ProgressBarColumn(),
+                    new PercentageColumn(),
+                    new DownloadedColumn(),
+                    new SpinnerColumn(),
+                })
+                .StartAsync(async ctx => 
+                {
+                    foreach (var sourceStr in manifest.Build.Source)
                     {
-                        
+                        var entry = new SourceEntry(sourceStr);
+                        var task = ctx.AddTask($"[grey]{Markup.Escape(entry.FileName)}[/]");
+
                         await sourceMgr.FetchSourceAsync(entry, downloadDir, (total, current) => 
                         {
                             if (total.HasValue && total.Value > 0)
@@ -65,29 +65,26 @@ public class ArchBuildProvider : IBuildProvider
                             }
                             else
                             {
-                                // SERVER DID NOT PROVIDE SIZE (Chunked)
-                                // We set a fake MaxValue so the percentage doesn't show 0/100, 
-                                // but we keep the bar indeterminate to show movement.
                                 task.IsIndeterminate = true;
-        
-                                // Update description to show raw downloaded amount since we can't show %
-                                task.Description = $"[grey]{Markup.Escape(entry.FileName)}[/] [blue]({current / 1024} KB downloaded)[/]";
+                                task.Description = $"[grey]{Markup.Escape(entry.FileName)}[/] [blue]({current / 1024} KB)[/]";
                             }
                         });
+                        
+                        task.StopTask();
                     }
-                    catch (Exception ex)
-                    {
-                        AnsiConsole.MarkupLine($"[red]Error downloading {entry.FileName}:[/] {Markup.Escape(ex.Message)}");
-                        throw; // Stop the build
-                    }
-                    
-                    task.StopTask();
-                }
-            });
+                });
+        }
 
-        // Integrity checks follow...
+        // 2. Verify Checksums (Must still happen even if download skipped)
         var integrity = new IntegrityManager();
         integrity.VerifyChecksums(manifest, downloadDir, startDir);
+
+        // 3. Verify Signatures
+        if (!skipGpg)
+        {
+            var sigVerifier = new SignatureVerifier();
+            sigVerifier.VerifySignatures(manifest, downloadDir, startDir);
+        }
     }
 
     public async Task BuildAsync(AuroraManifest manifest, string buildDir, string startDir, Action<string> logAction)

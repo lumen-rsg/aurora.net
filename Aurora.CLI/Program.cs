@@ -33,6 +33,7 @@ class Program
         bool assumeYes = false;
         bool force = false;
         bool skipGpg = false;
+        bool skipDownload = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -45,6 +46,7 @@ class Program
             else if (arg == "--force" || arg == "-f") force = true;
             else if (arg == "-y" || arg == "--yes") assumeYes = true;
             else if (arg == "--skip-gpg") skipGpg = true;
+            else if (arg == "--skip-download" || arg == "-S") skipDownload = true; 
             else commandArgs.Add(arg);
         }
 
@@ -53,7 +55,7 @@ class Program
             ? Path.GetFullPath(bootstrapPath) 
             : (OperatingSystem.IsLinux() ? "/" : Path.Combine(Directory.GetCurrentDirectory(), "sysroot"));
 
-        var config = new CliConfiguration(sysRoot, force, assumeYes, skipGpg);
+        var config = new CliConfiguration(sysRoot, force, assumeYes, skipGpg, skipDownload);
         
         // Ensure the internal state directory exists
         try 
