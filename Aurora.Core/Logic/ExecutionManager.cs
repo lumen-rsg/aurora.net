@@ -122,21 +122,20 @@ public class ExecutionManager
 
     private void ConfigureEnvironment(ProcessStartInfo psi)
     {
-        // --- 1. Start with a clean slate for build-related vars ---
-        // makepkg unsets these to ensure a reproducible environment.
+        // 1. Sanitize (Remove problematic vars)
         psi.Environment.Remove("ACLOCAL_PATH");
         psi.Environment.Remove("AUTOMAKE_FLAGS");
         psi.Environment.Remove("AUTOCONF_FLAGS");
         psi.Environment.Remove("GETTEXT_PATH");
 
-        // --- 2. Set core Aurora/makepkg variables ---
+        // 2. Set Core Vars
         psi.Environment["srcdir"] = _srcDir;
         psi.Environment["pkgdir"] = _pkgDir;
         psi.Environment["startdir"] = _startDir;
         psi.Environment["LC_ALL"] = "C";
         psi.Environment["LANG"] = "C";
         
-        // --- 3. Set compiler flags from loaded config ---
+        // 3. Flags (from config)
         var cflags = _sysConfig.CFlags;
         var cxxflags = _sysConfig.CxxFlags;
 
@@ -154,7 +153,7 @@ public class ExecutionManager
         psi.Environment["LDFLAGS"] = _sysConfig.LdFlags;
         psi.Environment["MAKEFLAGS"] = _sysConfig.MakeFlags;
         
-        // --- 4. Set a robust PATH ---
+        // 4. PATH Sanitization
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
         var requiredPaths = new List<string> 
         { 
@@ -174,11 +173,23 @@ public class ExecutionManager
         }
         psi.Environment["PATH"] = string.Join(Path.PathSeparator, requiredPaths);
 
-        // --- 5. Explicitly set tool paths ---
-        string? m4Path = FindExecutable("m4", requiredPaths);
-        if (!string.IsNullOrEmpty(m4Path))
+        // --- FIX: Explicitly set critical tools ---
+        // Map: binary_name -> ENV_VAR_NAME
+        var criticalTools = new Dictionary<string, string>
         {
-            psi.Environment["M4"] = m4Path;
+            { "m4", "M4" },
+            { "perl", "PERL" },
+            { "texi2pdf", "TEXI2PDF" },
+            { "make", "MAKE" } 
+        };
+
+        foreach (var tool in criticalTools)
+        {
+            string? toolAbsPath = FindExecutable(tool.Key, requiredPaths);
+            if (!string.IsNullOrEmpty(toolAbsPath))
+            {
+                psi.Environment[tool.Value] = toolAbsPath;
+            }
         }
     }
 
