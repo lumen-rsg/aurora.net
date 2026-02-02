@@ -122,16 +122,21 @@ public class ExecutionManager
 
     private void ConfigureEnvironment(ProcessStartInfo psi)
     {
+        // --- 1. Start with a clean slate for build-related vars ---
+        // makepkg unsets these to ensure a reproducible environment.
+        psi.Environment.Remove("ACLOCAL_PATH");
+        psi.Environment.Remove("AUTOMAKE_FLAGS");
+        psi.Environment.Remove("AUTOCONF_FLAGS");
+        psi.Environment.Remove("GETTEXT_PATH");
+
+        // --- 2. Set core Aurora/makepkg variables ---
         psi.Environment["srcdir"] = _srcDir;
         psi.Environment["pkgdir"] = _pkgDir;
         psi.Environment["startdir"] = _startDir;
-        
-        // --- FIX 1: Enforce Standard Locale (C) ---
-        // This ensures tool output is English, which configure scripts rely on for parsing.
         psi.Environment["LC_ALL"] = "C";
         psi.Environment["LANG"] = "C";
-
-        // --- Flags ---
+        
+        // --- 3. Set compiler flags from loaded config ---
         var cflags = _sysConfig.CFlags;
         var cxxflags = _sysConfig.CxxFlags;
 
@@ -149,9 +154,7 @@ public class ExecutionManager
         psi.Environment["LDFLAGS"] = _sysConfig.LdFlags;
         psi.Environment["MAKEFLAGS"] = _sysConfig.MakeFlags;
         
-        psi.Environment["GIT_HTTP_POST_BUFFER"] = "524288000";
-        
-        // --- PATH Sanitization ---
+        // --- 4. Set a robust PATH ---
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
         var requiredPaths = new List<string> 
         { 
@@ -169,41 +172,13 @@ public class ExecutionManager
         {
             if (!requiredPaths.Contains(part)) requiredPaths.Add(part);
         }
-
         psi.Environment["PATH"] = string.Join(Path.PathSeparator, requiredPaths);
 
-        // --- FIX 2: Explicitly set M4 to absolute path ---
-        // Autoconf's configure script requires M4 to be an absolute path or it fails validation
-        // We look for it in the sanitized paths.
+        // --- 5. Explicitly set tool paths ---
         string? m4Path = FindExecutable("m4", requiredPaths);
-        string? texi2pdfPath = FindExecutable("texi2pdf", requiredPaths);
-        string? perlPath = FindExecutable("perl", requiredPaths);
         if (!string.IsNullOrEmpty(m4Path))
         {
             psi.Environment["M4"] = m4Path;
-        }
-        else
-        {
-            // Fallback if we can't find it (unlikely on Linux)
-            psi.Environment["M4"] = "/usr/bin/m4";
-        }
-        
-        if(!string.IsNullOrEmpty(texi2pdfPath))
-        {
-            psi.Environment["texi2pdf"] = texi2pdfPath;
-        }
-        else
-        {
-            psi.Environment["texi2pdf"] = "/usr/bin/texi2pdf";
-        }
-
-        if (!string.IsNullOrEmpty(perlPath))
-        {
-            psi.Environment["perl"] = perlPath;
-        }
-        else
-        {
-            psi.Environment["perl"] = "/usr/bin/perl";
         }
     }
 
