@@ -12,34 +12,34 @@ public static class ArtifactCreator
     {
         string fileName = $"{manifest.Package.Name}-{manifest.Package.Version}-{manifest.Package.Architecture}.au";
         string outputPath = Path.Combine(outputDir, fileName);
-        
-        // 1. Resolve Source Hash from the manifest's build section
-        // We use the first checksum from the PKGBUILD as the source_hash identity
+
+        AnsiConsole.MarkupLine($"[bold]Compressing artifact:[/] [cyan]{fileName}[/]");
+
+        // 1. Calculate installed size (approximate)
+        manifest.Files.PackageSize = GetDirectorySize(pkgDir);
+
+        // 2. Source Hash
         if (string.IsNullOrEmpty(manifest.Files.SourceHash) && manifest.Build.Sha256Sums.Count > 0)
         {
             manifest.Files.SourceHash = manifest.Build.Sha256Sums[0];
         }
 
-        AnsiConsole.MarkupLine($"[bold]Compressing artifact:[/] [cyan]{fileName}[/]");
-
-        // 1. Calculate installed size
-        manifest.Files.PackageSize = GetDirectorySize(pkgDir);
-
-        // 2. Write metadata into the pkgDir so it gets included in the tar
-        // But we use a standard name inside the archive
+        // 3. Write metadata
         var metaContent = ManifestWriter.Serialize(manifest);
         File.WriteAllText(Path.Combine(pkgDir, "aurora.meta"), metaContent);
 
-        // 3. Create Gzipped Tar
+        // 4. Create Gzipped Tar
         if (File.Exists(outputPath)) File.Delete(outputPath);
 
         using (var fs = File.Create(outputPath))
         using (var gz = new GZipStream(fs, CompressionLevel.Optimal))
         using (var tar = new TarWriter(gz, TarEntryFormat.Pax))
         {
-            // Recursively add files from pkgDir
             await AddDirectoryToTarRecursive(tar, pkgDir, "");
         }
+
+        // Remove the meta file from the source dir after packing to leave it clean? 
+        // makepkg usually leaves .PKGINFO there. We can leave it.
 
         AnsiConsole.MarkupLine($"[green]✔ Artifact created at {outputPath}[/]");
     }
@@ -47,28 +47,49 @@ public static class ArtifactCreator
     private static async Task AddDirectoryToTarRecursive(TarWriter writer, string sourceDir, string entryPrefix)
     {
         var dirInfo = new DirectoryInfo(sourceDir);
+        
+        // Use standard Unix forward slashes for the prefix
+        entryPrefix = entryPrefix.Replace('\\', '/');
+
         foreach (var item in dirInfo.GetFileSystemInfos())
         {
-            // Ensure forward slashes for Linux compatibility
             var entryName = string.IsNullOrEmpty(entryPrefix) 
                 ? item.Name 
                 : $"{entryPrefix}/{item.Name}";
 
+            // --- FIX: Handle Symbolic Links ---
+            if (item.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                var entry = new PaxTarEntry(TarEntryType.SymbolicLink, entryName);
+                
+                // .NET 6+ property to get the link target
+                entry.LinkName = item.LinkTarget;
+
+                // Handle permissions (Default to 777 for links, but good to try)
+                if (OperatingSystem.IsLinux())
+                {
+                    try { entry.Mode = File.GetUnixFileMode(item.FullName); } catch {}
+                }
+
+                await writer.WriteEntryAsync(entry);
+                continue; // Done with this item, do NOT recurse or open
+            }
+
             if (item is DirectoryInfo subDir)
             {
                 var entry = new PaxTarEntry(TarEntryType.Directory, entryName);
+                if (OperatingSystem.IsLinux()) entry.Mode = File.GetUnixFileMode(subDir.FullName);
+                
                 await writer.WriteEntryAsync(entry);
                 await AddDirectoryToTarRecursive(writer, subDir.FullName, entryName);
             }
             else if (item is FileInfo file)
             {
                 var entry = new PaxTarEntry(TarEntryType.RegularFile, entryName);
-                // Set the correct mode (755 for scripts/bins, 644 for others)
-                // For a simple build tool, we can preserve host attributes if on Linux
-                if (OperatingSystem.IsLinux()) {
-                    entry.Mode = File.GetUnixFileMode(file.FullName);
-                }
+                
+                if (OperatingSystem.IsLinux()) entry.Mode = File.GetUnixFileMode(file.FullName);
 
+                // For regular files, we open the stream
                 using var stream = File.OpenRead(file.FullName);
                 entry.DataStream = stream;
                 await writer.WriteEntryAsync(entry);
@@ -78,6 +99,7 @@ public static class ArtifactCreator
 
     private static long GetDirectorySize(string path)
     {
+        // Simple size calculation (doesn't account for dedup/sparse but good enough for metadata)
         return Directory.GetFiles(path, "*", SearchOption.AllDirectories)
                         .Select(f => new FileInfo(f).Length)
                         .Sum();
