@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Aurora.Core.Models;
+using Spectre.Console;
 
 namespace Aurora.Core.Net.DownloadProviders;
 
@@ -9,29 +10,44 @@ public class GitProvider : IDownloadProvider
 
     public async Task DownloadAsync(SourceEntry entry, string destinationPath, Action<long?, long> onProgress)
     {
-        // 1. Clean the URL
         var cloneUrl = entry.Url.StartsWith("git+") ? entry.Url.Substring(4) : entry.Url;
-        
-        // Remove fragments (e.g. #tag=v1.0)
         if (cloneUrl.Contains('#')) cloneUrl = cloneUrl.Split('#')[0];
-        
-        // FIX: Remove query parameters (e.g. ?signed)
         if (cloneUrl.Contains('?')) cloneUrl = cloneUrl.Split('?')[0];
 
-        // 2. Signal start
         onProgress(null, 0);
 
-        if (!Directory.Exists(destinationPath))
+        int maxRetries = 3;
+        for (int i = 1; i <= maxRetries; i++)
         {
-            await RunGitCommandAsync($"clone --mirror \"{cloneUrl}\" \"{destinationPath}\"");
+            try
+            {
+                if (!Directory.Exists(destinationPath))
+                {
+                    await RunGitCommandAsync($"clone --mirror \"{cloneUrl}\" \"{destinationPath}\"");
+                }
+                else
+                {
+                    await RunGitCommandAsync($"remote set-url origin \"{cloneUrl}\"", destinationPath);
+                    await RunGitCommandAsync($"remote update --prune", destinationPath);
+                }
+                
+                // Success!
+                onProgress(100, 100);
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (i == maxRetries)
+                {
+                    // Last attempt failed, throw for real
+                    throw;
+                }
+                AnsiConsole.MarkupLine($"[yellow]Git operation failed (Attempt {i}/{maxRetries}): {ex.Message}. Retrying...[/]");
+                // Clean up partially failed clone
+                if (Directory.Exists(destinationPath)) Directory.Delete(destinationPath, true);
+                await Task.Delay(2000); // Wait 2 seconds before retry
+            }
         }
-        else
-        {
-            await RunGitCommandAsync($"remote set-url origin \"{cloneUrl}\"", destinationPath);
-            await RunGitCommandAsync($"remote update --prune", destinationPath);
-        }
-
-        onProgress(100, 100);
     }
 
     private async Task RunGitCommandAsync(string arguments, string? workingDir = null)

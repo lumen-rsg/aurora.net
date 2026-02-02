@@ -149,6 +149,8 @@ public class ExecutionManager
         psi.Environment["LDFLAGS"] = _sysConfig.LdFlags;
         psi.Environment["MAKEFLAGS"] = _sysConfig.MakeFlags;
         
+        psi.Environment["GIT_HTTP_POST_BUFFER"] = "524288000";
+        
         // --- PATH Sanitization ---
         var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
         var requiredPaths = new List<string> 
