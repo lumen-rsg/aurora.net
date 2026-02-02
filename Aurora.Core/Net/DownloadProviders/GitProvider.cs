@@ -9,10 +9,16 @@ public class GitProvider : IDownloadProvider
 
     public async Task DownloadAsync(SourceEntry entry, string destinationPath, Action<long?, long> onProgress)
     {
+        // 1. Clean the URL
         var cloneUrl = entry.Url.StartsWith("git+") ? entry.Url.Substring(4) : entry.Url;
+        
+        // Remove fragments (e.g. #tag=v1.0)
         if (cloneUrl.Contains('#')) cloneUrl = cloneUrl.Split('#')[0];
+        
+        // FIX: Remove query parameters (e.g. ?signed)
+        if (cloneUrl.Contains('?')) cloneUrl = cloneUrl.Split('?')[0];
 
-        // 1. Signal start (Indeterminate state)
+        // 2. Signal start
         onProgress(null, 0);
 
         if (!Directory.Exists(destinationPath))
@@ -21,10 +27,10 @@ public class GitProvider : IDownloadProvider
         }
         else
         {
+            await RunGitCommandAsync($"remote set-url origin \"{cloneUrl}\"", destinationPath);
             await RunGitCommandAsync($"remote update --prune", destinationPath);
         }
 
-        // 2. Signal completion (Full bar)
         onProgress(100, 100);
     }
 
@@ -46,6 +52,7 @@ public class GitProvider : IDownloadProvider
         var err = await proc.StandardError.ReadToEndAsync();
         await proc.WaitForExitAsync();
 
+        // Git often prints progress to stderr, but if exit code is 0, it's not an error.
         if (proc.ExitCode != 0) throw new Exception($"Git error: {err}");
     }
 }
