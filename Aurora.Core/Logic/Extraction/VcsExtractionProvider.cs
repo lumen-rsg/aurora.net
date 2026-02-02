@@ -1,5 +1,7 @@
 using Aurora.Core.Models;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
+using Spectre.Console;
 
 namespace Aurora.Core.Logic.Extraction;
 
@@ -11,19 +13,15 @@ public class VcsExtractionProvider : IExtractionProvider
     {
         if (entry.Protocol == "git")
         {
-            // The directory where the code should actually live (e.g. .aurora-build/src/acl)
             var destination = Path.Combine(srcDir, entry.FileName);
             
             if (Directory.Exists(destination)) Directory.Delete(destination, true);
 
             onProgress($"Extracting {entry.FileName} from mirror...");
 
-            // 1. Clone from the LOCAL bare mirror to create a working tree
-            // We use the absolute path of the cachePath to ensure git finds it
             var absoluteCache = Path.GetFullPath(cachePath);
             await RunGitCommandAsync($"clone \"{absoluteCache}\" \"{destination}\"");
 
-            // 2. Checkout the specific version if defined (fragment #tag=v2.3.2)
             string target = "HEAD";
             if (!string.IsNullOrEmpty(entry.Fragment))
             {
@@ -32,8 +30,58 @@ public class VcsExtractionProvider : IExtractionProvider
                 await RunGitCommandAsync($"checkout {target}", destination);
             }
             
-            // 3. Make sure submodules are handled (Arch standard)
+            // --- FIX: Rewrite Submodule URLs before updating ---
+            await FixSubmoduleUrls(entry, destination);
+
             await RunGitCommandAsync($"submodule update --init --recursive", destination);
+        }
+    }
+    
+    private async Task FixSubmoduleUrls(SourceEntry parentEntry, string repoPath)
+    {
+        var gitmodulesPath = Path.Combine(repoPath, ".gitmodules");
+        if (!File.Exists(gitmodulesPath)) return;
+
+        string currentSubmoduleName = "";
+        foreach (var line in await File.ReadAllLinesAsync(gitmodulesPath))
+        {
+            var trimmed = line.Trim();
+
+            // Find the submodule section name
+            var match = Regex.Match(trimmed, @"\[submodule ""(.*?)""\]");
+            if (match.Success)
+            {
+                currentSubmoduleName = match.Groups[1].Value;
+                continue;
+            }
+
+            // Find the URL for the current submodule
+            if (!string.IsNullOrEmpty(currentSubmoduleName) && trimmed.StartsWith("url ="))
+            {
+                var url = trimmed.Split('=', 2)[1].Trim();
+
+                // This is the key: if the URL is relative (starts with . or /), fix it.
+                if (url.StartsWith("./") || url.StartsWith("../") || url.StartsWith("/"))
+                {
+                    // Construct the absolute URL based on the parent repo's URL
+                    // Parent: https://gitlab.gnome.org/GNOME/glib.git
+                    // Relative: ../gvdb.git
+                    // Result: https://gitlab.gnome.org/GNOME/gvdb.git
+                    
+                    // Get base URI of the parent
+                    var parentUri = new Uri(parentEntry.Url.Split('?')[0]);
+                    
+                    // Combine with the relative path
+                    var absoluteSubmoduleUri = new Uri(parentUri, url);
+
+                    AnsiConsole.MarkupLine($"  [grey]-> Rewriting submodule '{currentSubmoduleName}' URL to {absoluteSubmoduleUri.AbsoluteUri}[/]");
+                    
+                    // Use 'git config' to override the URL for this session
+                    await RunGitCommandAsync($"config submodule.{currentSubmoduleName}.url \"{absoluteSubmoduleUri.AbsoluteUri}\"", repoPath);
+                }
+
+                currentSubmoduleName = ""; // Reset for next section
+            }
         }
     }
 
