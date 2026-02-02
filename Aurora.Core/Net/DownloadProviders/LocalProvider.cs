@@ -8,15 +8,13 @@ public class LocalProvider : IDownloadProvider
 
     public string[] SupportedProtocols => new[] { "local" };
 
-    // Pass the project directory (startdir) to the provider
     public LocalProvider(string projectDir)
     {
         _projectDir = projectDir;
     }
 
-    public Task DownloadAsync(SourceEntry entry, string destinationPath, Action<string> onProgress)
+    public Task DownloadAsync(SourceEntry entry, string destinationPath, Action<long?, long> onProgress)
     {
-        // For local files, the "source" is the project directory
         string localPath = Path.Combine(_projectDir, entry.FileName);
 
         if (!File.Exists(localPath))
@@ -24,7 +22,10 @@ public class LocalProvider : IDownloadProvider
             throw new FileNotFoundException($"Local source file not found: {entry.FileName}");
         }
 
-        onProgress("Verified local source.");
+        // Get actual file size to show a full progress bar
+        var info = new FileInfo(localPath);
+        onProgress(info.Length, info.Length); 
+        
         return Task.CompletedTask;
     }
 }

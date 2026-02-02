@@ -7,5 +7,5 @@ public interface IDownloadProvider
     // Protocols this provider handles (e.g., "http", "https")
     string[] SupportedProtocols { get; }
 
-    Task DownloadAsync(SourceEntry entry, string destinationPath, Action<string> onProgress);
+    Task DownloadAsync(SourceEntry entry, string destinationPath, Action<long?, long> onProgress);
 }

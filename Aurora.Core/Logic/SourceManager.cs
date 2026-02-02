@@ -15,7 +15,7 @@ public class SourceManager
         _providers.Add(new GitProvider());
     }
 
-    public async Task FetchSourceAsync(SourceEntry entry, string srcDest, Action<string> onProgress)
+    public async Task FetchSourceAsync(SourceEntry entry, string srcDest, Action<long?, long> onProgress)
     {
         var provider = _providers.FirstOrDefault(p => 
             p.SupportedProtocols.Contains(entry.Protocol));
@@ -23,6 +23,8 @@ public class SourceManager
         if (provider == null)
             throw new NotSupportedException($"No download provider found for protocol: {entry.Protocol}");
 
+        // For non-local protocols, we download into the cache (SRCDEST)
+        // For local protocol, the provider just verifies it in the project dir
         var destPath = Path.Combine(srcDest, entry.FileName);
         
         await provider.DownloadAsync(entry, destPath, onProgress);

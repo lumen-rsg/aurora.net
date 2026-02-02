@@ -27,24 +27,44 @@ public class ArchBuildProvider : IBuildProvider
         return manifest;
     }
 
-    public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, string startDir) // Added startDir
+    public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, string startDir)
     {
         if (!Directory.Exists(downloadDir)) Directory.CreateDirectory(downloadDir);
-
-        // Pass startDir to SourceManager
         var sourceMgr = new SourceManager(startDir);
-        
-        AnsiConsole.MarkupLine("[bold]Fetching sources...[/]");
 
-        foreach (var sourceStr in manifest.Build.Source)
-        {
-            var entry = new SourceEntry(sourceStr);
-            // downloadDir (SRCDEST) is the target destination for remote stuff
-            await sourceMgr.FetchSourceAsync(entry, downloadDir, msg => 
+        await AnsiConsole.Progress()
+            .Columns(new ProgressColumn[] 
             {
-                AnsiConsole.MarkupLine($"  [grey]-> {msg}[/]");
+                new TaskDescriptionColumn(),    // Filename
+                new ProgressBarColumn(),        // Visual bar
+                new PercentageColumn(),         // 45%
+                new DownloadedColumn(),         // 12MB / 40MB
+                new SpinnerColumn(),            // Spinner
+            })
+            .StartAsync(async ctx => 
+            {
+                foreach (var sourceStr in manifest.Build.Source)
+                {
+                    var entry = new SourceEntry(sourceStr);
+                    var task = ctx.AddTask($"[grey]{entry.FileName}[/]");
+
+                    await sourceMgr.FetchSourceAsync(entry, downloadDir, (total, current) => 
+                    {
+                        if (total.HasValue)
+                        {
+                            task.MaxValue = total.Value;
+                            task.Value = current;
+                        }
+                        else
+                        {
+                            // If server doesn't provide size, just spin
+                            task.IsIndeterminate = true;
+                        }
+                    });
+                    
+                    task.StopTask();
+                }
             });
-        }
         
         // 2. Verify Checksums
         var integrity = new IntegrityManager();
