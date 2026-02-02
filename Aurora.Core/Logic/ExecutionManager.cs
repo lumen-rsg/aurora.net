@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using Aurora.Core.Contract;
 using Aurora.Core.Logic.Build;
+using Aurora.Core.Models;
 using Aurora.Core.Parsing;
 using Spectre.Console;
 
@@ -16,6 +17,7 @@ public class ExecutionManager
     // Paths exposed to the Bash environment
     private readonly string _srcDir;
     private readonly string _pkgDir;
+    private MakepkgConfig _sysConfig;
 
     public ExecutionManager(string buildDir, string startDir, AuroraManifest manifest)
     {
@@ -100,48 +102,33 @@ public class ExecutionManager
 
     private void ConfigureEnvironment(ProcessStartInfo psi)
     {
-        // --- Core Variables ---
         psi.Environment["srcdir"] = _srcDir;
         psi.Environment["pkgdir"] = _pkgDir;
         psi.Environment["startdir"] = _startDir;
         
-        psi.Environment["pkgname"] = _manifest.Package.Name;
-        psi.Environment["pkgver"] = _manifest.Package.Version.Split('-')[0]; // Before the hyphen
-        psi.Environment["pkgrel"] = _manifest.Package.Version.Contains('-') ? _manifest.Package.Version.Split('-')[1] : "1";
+        // Use the system's actual build flags
+        var cflags = _sysConfig.CFlags;
+        var cxxflags = _sysConfig.CxxFlags;
 
-        // --- Build Flags (from buildenv/*.sh logic) ---
-        // For V1, we will set sensible defaults. A future V2 could parse makepkg.conf
-        // TODO
-        // to get CFLAGS, LDFLAGS, etc.
-
-        // Simulating 'debugflags' and 'lto'
-        var cflags = "-D_FORTIFY_SOURCE=2";
+        // If 'debug' is in options, append the debug flags
         if (_manifest.Build.Options.Contains("debug"))
         {
-            cflags += " -g -ffile-prefix-map=${srcdir}=/usr/src/debug/${pkgname}";
+            cflags += " " + _sysConfig.DebugCFlags;
+            cxxflags += " " + _sysConfig.DebugCxxFlags;
+            
+            // Add the path remapping needed for debug symbols
+            var map = $"-ffile-prefix-map={_srcDir}=/usr/src/debug/{_manifest.Package.Name}";
+            cflags += " " + map;
+            cxxflags += " " + map;
         }
-        if (_manifest.Build.Options.Contains("lto"))
-        {
-            cflags += " -flto";
-        }
-        
+
         psi.Environment["CFLAGS"] = cflags;
-        psi.Environment["CXXFLAGS"] = cflags; // Usually the same
-        psi.Environment["LDFLAGS"] = _manifest.Build.Options.Contains("lto") ? "-flto" : "";
-
-        // Simulating 'makeflags'
-        if (!_manifest.Build.Options.Contains("!makeflags"))
-        {
-            psi.Environment["MAKEFLAGS"] = "-j" + (Environment.ProcessorCount + 1);
-        }
-
-        // Simulating 'compiler' (ccache/distcc)
-        var path = Environment.GetEnvironmentVariable("PATH");
-        if (_manifest.Build.Environment.Contains("ccache"))
-        {
-            path = "/usr/lib/ccache/bin:" + path;
-        }
-        psi.Environment["PATH"] = path;
+        psi.Environment["CXXFLAGS"] = cxxflags;
+        psi.Environment["LDFLAGS"] = _sysConfig.LdFlags;
+        psi.Environment["MAKEFLAGS"] = _sysConfig.MakeFlags;
+        
+        // Pass PATH
+        psi.Environment["PATH"] = Environment.GetEnvironmentVariable("PATH");
     }
     
 public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, AuroraManifest baseManifest, Action<string>? logAction = null)

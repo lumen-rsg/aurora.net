@@ -84,50 +84,63 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task BuildAsync(AuroraManifest manifest, string buildDir, string startDir, Action<string> logAction)
     {
+        // 1. Load System Build Configuration (/etc/makepkg.conf)
+        var sysConfig = await MakepkgConfigLoader.LoadAsync();
+
+        // 2. Check Build Dependencies (Lumina Host-Audit Stub)
         DependencyStub.CheckBuildDependencies(manifest.Dependencies.Build);
 
+        // 3. Setup Absolute Paths
         var absoluteBuildDir = Path.GetFullPath(buildDir);
         var absoluteStartDir = Path.GetFullPath(startDir);
+        var srcDir = Path.Combine(absoluteBuildDir, "src");
+        var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST");
 
-        var exec = new ExecutionManager(absoluteBuildDir, absoluteStartDir, manifest);
+        // 4. Initialize Core Managers
+        var exec = new ExecutionManager(absoluteBuildDir, absoluteStartDir, manifest, sysConfig);
         var extractor = new SourceExtractor();
         
+        // 5. Cleanup and Prepare Sandboxed Directory Structure
         exec.PrepareDirectories();
+        if (!Directory.Exists(srcDir)) Directory.CreateDirectory(srcDir);
 
-        // Extract sources, passing startDir so it can find local files
-        var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST"); 
-        var srcDir = Path.Combine(absoluteBuildDir, "src");
-        Directory.CreateDirectory(srcDir);
-
+        // 6. Source Extraction Phase
+        // This handles symlinking local files and unpacking remote archives
         await extractor.ExtractAllAsync(manifest, cacheDir, srcDir, absoluteStartDir);
 
-        // Pass the logAction to the execution manager
+        // 7. Run Standard Build Lifecycle (User Space)
         await exec.RunBuildFunctionAsync("prepare", logAction);
         await exec.RunBuildFunctionAsync("build", logAction);
         
-        if (manifest.Build.Environment.Contains("check"))
+        if (manifest.Build.Environment.Contains("check") || manifest.Build.Options.Contains("check"))
+        {
             await exec.RunBuildFunctionAsync("check", logAction);
+        }
 
-        // 2. Run fakeroot-space functions and create artifacts
-        var packageNames = manifest.Package.AllNames.Any() 
+        // 8. Run Packaging Phase (Fakeroot Space)
+        // Detect all packages produced by this PKGBUILD (Split Packages)
+        var packageNames = manifest.Package.AllNames.Count > 0 
             ? manifest.Package.AllNames 
             : new List<string> { manifest.Package.Name };
 
         foreach (var name in packageNames)
         {
-            AnsiConsole.MarkupLine($"[bold magenta]Packaging Phase:[/] [white]{name}[/]");
+            AnsiConsole.MarkupLine($"\n[bold magenta]Packaging Phase:[/] [white]{name}[/]");
             
-            string funcName = packageNames.Count > 1 || name != manifest.Package.Name 
+            // Determine function name: 'package' for single, 'package_name' for split
+            string funcName = (packageNames.Count > 1 || name != manifest.Package.Name) 
                 ? $"package_{name}" 
                 : "package";
 
-            // Use the fakeroot-enabled method
+            // Execute package function in fakeroot and capture metadata overrides
             var subManifest = await exec.RunPackageFunctionAsync(funcName, manifest, logAction);
 
+            // 9. Final Artifact Creation
+            // Compress the specific subPkgDir into the final .au file
             var subPkgDir = Path.Combine(absoluteBuildDir, "pkg", name);
             await ArtifactCreator.CreateAsync(subManifest, subPkgDir, absoluteStartDir);
         }
 
-        AnsiConsole.MarkupLine("[green bold]Build process completed successfully![/]");
+        AnsiConsole.MarkupLine("\n[green bold]✔ Build process completed successfully![/]");
     }
 }
