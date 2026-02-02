@@ -60,7 +60,7 @@ public class ArchiveExtractionProvider : IExtractionProvider
     private bool IsArchive(string filename)
     {
         var f = filename.ToLowerInvariant();
-        if (f.EndsWith(".sig") || f.EndsWith(".asc")) return false;
+        if (f.EndsWith(".sig") || f.EndsWith(".asc") || f.EndsWith(".sign")) return false;
 
         if (f.Contains(".tar") || f.EndsWith(".tgz") || f.EndsWith(".tbz2")) return true;
 
