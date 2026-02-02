@@ -47,7 +47,6 @@ public class VcsExtractionProvider : IExtractionProvider
         {
             var trimmed = line.Trim();
 
-            // Find the submodule section name
             var match = Regex.Match(trimmed, @"\[submodule ""(.*?)""\]");
             if (match.Success)
             {
@@ -55,32 +54,28 @@ public class VcsExtractionProvider : IExtractionProvider
                 continue;
             }
 
-            // Find the URL for the current submodule
             if (!string.IsNullOrEmpty(currentSubmoduleName) && trimmed.StartsWith("url ="))
             {
                 var url = trimmed.Split('=', 2)[1].Trim();
 
-                // This is the key: if the URL is relative (starts with . or /), fix it.
                 if (url.StartsWith("./") || url.StartsWith("../") || url.StartsWith("/"))
                 {
-                    // Construct the absolute URL based on the parent repo's URL
-                    // Parent: https://gitlab.gnome.org/GNOME/glib.git
-                    // Relative: ../gvdb.git
-                    // Result: https://gitlab.gnome.org/GNOME/gvdb.git
+                    // --- FIX: Clean the parent URL before using it as a base ---
+                    var parentUrl = parentEntry.Url;
+                    if (parentUrl.StartsWith("git+"))
+                    {
+                        parentUrl = parentUrl.Substring(4);
+                    }
+                    var parentUri = new Uri(parentUrl.Split('?')[0]);
                     
-                    // Get base URI of the parent
-                    var parentUri = new Uri(parentEntry.Url.Split('?')[0]);
-                    
-                    // Combine with the relative path
                     var absoluteSubmoduleUri = new Uri(parentUri, url);
 
                     AnsiConsole.MarkupLine($"  [grey]-> Rewriting submodule '{currentSubmoduleName}' URL to {absoluteSubmoduleUri.AbsoluteUri}[/]");
                     
-                    // Use 'git config' to override the URL for this session
                     await RunGitCommandAsync($"config submodule.{currentSubmoduleName}.url \"{absoluteSubmoduleUri.AbsoluteUri}\"", repoPath);
                 }
 
-                currentSubmoduleName = ""; // Reset for next section
+                currentSubmoduleName = ""; 
             }
         }
     }
