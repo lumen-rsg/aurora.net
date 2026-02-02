@@ -19,7 +19,7 @@ public class ExecutionManager
     private readonly string _pkgDir;
     private MakepkgConfig _sysConfig;
 
-    public ExecutionManager(string buildDir, string startDir, AuroraManifest manifest)
+    public ExecutionManager(string buildDir, string startDir, AuroraManifest manifest, MakepkgConfig sysConfig)
     {
         _buildDir = buildDir;
         _startDir = startDir;
@@ -28,6 +28,7 @@ public class ExecutionManager
         // Define standard makepkg directory structure
         _srcDir = Path.Combine(_buildDir, "src");
         _pkgDir = Path.Combine(_buildDir, "pkg", manifest.Package.Name);
+        _sysConfig = sysConfig;
     }
 
     public void PrepareDirectories()
