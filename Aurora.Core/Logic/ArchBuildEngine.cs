@@ -22,9 +22,17 @@ public class ArchBuildEngine
     /// </summary>
     public async Task<AuroraManifest?> InspectPkgbuildAsync(string pkgbuildPath)
     {
-        // We use a clean, non-verbatim string for the Bash script to avoid confusion
-        // Note: we use ${var-} syntax to handle unset variables without crashing
+        // 1. We define stubs for common makepkg functions so the PKGBUILD doesn't 
+        // crash when sourced if it calls them globally (though rare).
+        // 2. We use 'set +e' to ensure sourcing continues even if the script has minor issues.
+        // 3. We quote all values to ensure the YAML parser doesn't choke on colons/quotes.
         var shim = @"
+# Stubs for makepkg internal functions
+msg() { :; }; msg2() { :; }; warning() { :; }; error() { :; }
+gettext() { echo ""$1""; }; 
+
+# Source the file, but don't exit on errors
+set +e
 source ""$1""
 
 # Helper to construct full version
@@ -32,41 +40,43 @@ fullver=""$pkgver-$pkgrel""
 [[ -n ""${epoch-}"" ]] && fullver=""$epoch:$fullver""
 
 echo ""package:""
-echo ""  name: ${pkgname[0]}""
+# Use printf to handle special characters and ensure quoting
+printf ""  name: \""%s\""\n"" ""${pkgname[0]}""
+printf ""  version: \""%s\""\n"" ""$fullver""
+printf ""  description: \""%s\""\n"" ""${pkgdesc-}""
+printf ""  architecture: \""%s\""\n"" ""${arch[0]}""
+printf ""  maintainer: \""%s\""\n"" ""${PACKAGER:-Unknown Packager}""
+
 echo ""  all_names:""
-for n in ""${pkgname[@]}""; do echo ""    - $n""; done # <--- Capture all split names
-echo ""  version: $fullver""
-echo ""  description: ${pkgdesc-}""
-echo ""  architecture: ${arch[0]}""
-echo ""  maintainer: ${PACKAGER:-Unknown Packager}""
+for n in ""${pkgname[@]}""; do 
+    [[ -n ""$n"" ]] && printf ""    - \""%s\""\n"" ""$n""
+done
 
 echo ""metadata:""
-echo ""  url: ${url-}""
+printf ""  url: \""%s\""\n"" ""${url-}""
 echo ""  license:""
-for l in ""${license[@]-}""; do [[ -n ""$l"" ]] && echo ""    - $l""; done
+for l in ""${license[@]-}""; do [[ -n ""$l"" ]] && printf ""    - \""%s\""\n"" ""$l""; done
 
 echo ""dependencies:""
 echo ""  runtime:""
-for d in ""${depends[@]-}""; do [[ -n ""$d"" ]] && echo ""    - $d""; done
+for d in ""${depends[@]-}""; do [[ -n ""$d"" ]] && printf ""    - \""%s\""\n"" ""$d""; done
 echo ""  build:""
-for d in ""${makedepends[@]-}""; do [[ -n ""$d"" ]] && echo ""    - $d""; done
+for d in ""${makedepends[@]-}""; do [[ -n ""$d"" ]] && printf ""    - \""%s\""\n"" ""$d""; done
 
 echo ""build:""
 echo ""  options:""
-for o in ""${options[@]-}""; do [[ -n ""$o"" ]] && echo ""    - $o""; done
+for o in ""${options[@]-}""; do [[ -n ""$o"" ]] && printf ""    - \""%s\""\n"" ""$o""; done
 echo ""  source:""
-# Removed the manual escaped quotes around $s
-for s in ""${source[@]-}""; do [[ -n ""$s"" ]] && echo ""    - $s""; done
+for s in ""${source[@]-}""; do [[ -n ""$s"" ]] && printf ""    - \""%s\""\n"" ""$s""; done
 echo ""  sha256sums:""
-for s in ""${sha256sums[@]-}""; do [[ -n ""$s"" ]] && echo ""    - $s""; done
+for s in ""${sha256sums[@]-}""; do [[ -n ""$s"" ]] && printf ""    - \""%s\""\n"" ""$s""; done
 ";
 
         var psi = new ProcessStartInfo
         {
             FileName = "/bin/bash",
-            // --noprofile --norc: Speed up and isolation
-            // -s: Read commands from stdin, remaining args go to $1, $2...
-            Arguments = "--noprofile --norc -s -- " + $"\"{pkgbuildPath}\"",
+            // We use --noprofile to ensure a clean environment
+            Arguments = "--noprofile -s -- " + $"\"{pkgbuildPath}\"",
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -80,7 +90,7 @@ for s in ""${sha256sums[@]-}""; do [[ -n ""$s"" ]] && echo ""    - $s""; done
             using var process = Process.Start(psi);
             if (process == null) throw new Exception("Could not start bash process.");
 
-            // Pipe the script to bash
+            // Pipe the shim to stdin
             await process.StandardInput.WriteAsync(shim);
             process.StandardInput.Close();
 
@@ -88,12 +98,15 @@ for s in ""${sha256sums[@]-}""; do [[ -n ""$s"" ]] && echo ""    - $s""; done
             var error = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
 
-            if (process.ExitCode != 0)
+            // If bash itself fails (syntax error in sourcing), show stderr
+            if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(output))
             {
-                throw new Exception($"Bash prober failed: {error}");
+                throw new Exception($"Bash prober failed to start:\n{error}");
             }
 
-            // Parse the output using our ManifestParser
+            // If there's output, we try to parse it even if exit code was non-zero
+            // because some PKGBUILDs return non-zero after sourcing due to 
+            // the last executed command in the file.
             return ManifestParser.Parse(output);
         }
         catch (Exception ex)
