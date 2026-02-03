@@ -37,7 +37,6 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, bool skipDownload, string startDir)
     {
-        // This method remains unchanged
         if (!Directory.Exists(downloadDir)) Directory.CreateDirectory(downloadDir);
 
         if (skipDownload)
@@ -93,7 +92,6 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task BuildAsync(AuroraManifest manifest, string buildDir, string startDir, Action<string> logAction)
     {
-        // Setup logic remains the same
         var sysConfig = await MakepkgConfigLoader.LoadAsync();
         var absoluteBuildDir = Path.GetFullPath(buildDir);
         var absoluteStartDir = Path.GetFullPath(startDir);
@@ -107,13 +105,11 @@ public class ArchBuildProvider : IBuildProvider
         var extractor = new SourceExtractor();
         await extractor.ExtractAllAsync(manifest, cacheDir, srcDir, absoluteStartDir);
 
-        // Generate the monolithic script with the subshell fix
         var scriptPath = Path.Combine(absoluteBuildDir, "aurora_build_script.sh");
         var scriptContent = GenerateMonolithicScript(manifest, sysConfig, srcDir, absoluteBuildDir, startDir);
         await File.WriteAllTextAsync(scriptPath, scriptContent);
         File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
-        // Execution logic remains the same
         var psi = new ProcessStartInfo
         {
             FileName = "/bin/bash",
@@ -125,7 +121,8 @@ public class ArchBuildProvider : IBuildProvider
             WorkingDirectory = srcDir 
         };
         
-        ConfigureBuildEnvironment(psi, sysConfig, srcDir, absoluteBuildDir, startDir);
+        // FIX: Pass manifest to ConfigureBuildEnvironment and don't clear env
+        ConfigureBuildEnvironment(psi, sysConfig, manifest, srcDir, absoluteBuildDir, startDir);
         
         var fakerootPsi = FakerootHelper.WrapInFakeroot(psi);
         var logFile = Path.Combine(buildDir, "build.log");
@@ -203,7 +200,6 @@ public class ArchBuildProvider : IBuildProvider
 
         sb.AppendLine($"source '{Path.Combine(startDir, "PKGBUILD")}'");
 
-        // --- THE FIX: Wrap function calls in subshells `( ... )` ---
         sb.AppendLine("run_prepare() { if type -t prepare &>/dev/null; then msg \"Running prepare()...\" && ( prepare ); fi; }");
         sb.AppendLine("run_build() { if type -t build &>/dev/null; then msg \"Running build()...\" && ( build ); fi; }");
         sb.AppendLine("run_check() { if type -t check &>/dev/null; then msg \"Running check()...\" && ( check ); fi; }");
@@ -217,7 +213,7 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("  done; echo '---AURORA_METADATA_END---';");
         sb.AppendLine("}");
 
-        sb.AppendLine("cd \"$srcdir\""); // Set the main working directory once
+        sb.AppendLine("cd \"$srcdir\"");
         sb.AppendLine("run_prepare");
         sb.AppendLine("run_build");
         
@@ -241,7 +237,6 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("  package_func=\"package_$pkgname\"");
         sb.AppendLine("  if ! type -t \"$package_func\" &>/dev/null; then package_func=\"package\"; fi");
         
-        // --- THE FIX: Also wrap the package function in a subshell ---
         sb.AppendLine("  ( \"$package_func\" )");
         
         sb.AppendLine("  scrape_metadata");
@@ -250,21 +245,56 @@ public class ArchBuildProvider : IBuildProvider
         return sb.ToString();
     }
     
-    private void ConfigureBuildEnvironment(ProcessStartInfo psi, MakepkgConfig c, string srcDir, string buildDir, string startDir)
+    private void ConfigureBuildEnvironment(ProcessStartInfo psi, MakepkgConfig c, AuroraManifest m, string srcDir, string buildDir, string startDir)
     {
-        psi.Environment.Clear();
-        psi.Environment["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
+        // NO psi.Environment.Clear() - We need system env for tool discovery (m4, etc)
+        
+        // 1. Force a standard, minimal PATH
+        var path = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
+        if (m.Build.Options.Contains("ccache"))
+        {
+            path = "/usr/lib/ccache/bin:" + path;
+        }
+        psi.Environment["PATH"] = path;
+
+        // 2. Set critical shell vars for configure scripts
+        psi.Environment["SHELL"] = "/bin/bash";
         psi.Environment["LC_ALL"] = "C";
+        psi.Environment["LANG"] = "C";
         psi.Environment["HOME"] = buildDir;
+
+        // 3. Set standard makepkg directory variables
         psi.Environment["srcdir"] = srcDir;
         psi.Environment["startdir"] = startDir;
+        // Set pkgdir to the main package directory as a default
+        psi.Environment["pkgdir"] = Path.Combine(buildDir, "pkg", m.Package.Name);
+
+        // 4. Inject architecture and host
         psi.Environment["CARCH"] = c.Arch;
         psi.Environment["CHOST"] = c.Chost;
+
+        // 5. Inject compiler and make flags
         psi.Environment["CFLAGS"] = c.CFlags;
         psi.Environment["CXXFLAGS"] = c.CxxFlags;
         psi.Environment["CPPFLAGS"] = c.CppFlags;
         psi.Environment["LDFLAGS"] = c.LdFlags;
         psi.Environment["MAKEFLAGS"] = c.MakeFlags;
+
+        // 6. Handle Debug and LTO
+        if (m.Build.Options.Contains("debug"))
+        {
+            var map = $"-ffile-prefix-map={srcDir}=/usr/src/debug/{m.Package.Name}";
+            psi.Environment["CFLAGS"] += $" {c.DebugCFlags} {map}";
+            psi.Environment["CXXFLAGS"] += $" {c.DebugCxxFlags} {map}";
+        }
+
+        if (m.Build.Options.Contains("lto"))
+        {
+            psi.Environment["CFLAGS"] += $" {c.LtoFlags}";
+            psi.Environment["CXXFLAGS"] += $" {c.LtoFlags}";
+            psi.Environment["LDFLAGS"] += $" {c.LtoFlags}";
+        }
+        
         psi.Environment["PACKAGER"] = c.Packager;
     }
     
