@@ -225,20 +225,22 @@ public class ArchBuildProvider : IBuildProvider
         psi.Environment["srcdir"] = srcDir;
         psi.Environment["startdir"] = startDir;
 
-        // CRITICAL: Don't set pkgdir globally for GCC build. It is only for the packaging loop.
+        // CRITICAL FIX: Do NOT set pkgdir during the build phase.
+        psi.Environment.Remove("pkgdir");
 
         psi.Environment["CARCH"] = c.Arch;
         psi.Environment["CHOST"] = c.Chost;
 
-        // --- NEW SMART FLAG LOGIC ---
-        // Instead of prepending -U (which breaks GCC bootstrap preprocessor tests),
-        // we add -Wno-error=cpp. This allows packages to redefine macros (like _FORTIFY_SOURCE)
-        // without it being a fatal error, while keeping the preprocessor environment "pure".
-        string WrapFlags(string val) => string.IsNullOrEmpty(val) ? val : $"{val} -Wno-error=cpp";
+        // --- CRITICAL FIX: Merge CPPFLAGS into CFLAGS/CXXFLAGS ---
+        // This ensures build system introspection (like in GCC, glib2) sees all required preprocessor macros.
+        var cflags = $"{c.CFlags} {c.CppFlags} -Wno-error=cpp";
+        var cxxflags = $"{c.CxxFlags} {c.CppFlags} -Wno-error=cpp";
 
-        psi.Environment["CFLAGS"] = WrapFlags(c.CFlags);
-        psi.Environment["CXXFLAGS"] = WrapFlags(c.CxxFlags);
-        psi.Environment["CPPFLAGS"] = c.CppFlags; // Keep CPPFLAGS pristine for Autotools sanity
+        psi.Environment["CFLAGS"] = cflags;
+        psi.Environment["CXXFLAGS"] = cxxflags;
+        // Unset CPPFLAGS to avoid double-application by smart build systems.
+        psi.Environment.Remove("CPPFLAGS"); 
+        
         psi.Environment["LDFLAGS"] = c.LdFlags;
         psi.Environment["MAKEFLAGS"] = c.MakeFlags;
         psi.Environment["PACKAGER"] = c.Packager;
