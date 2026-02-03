@@ -24,8 +24,6 @@ public class RepoManager
     {
         _rootPath = rootPath;
 
-        // Optimized Handler: Forces IPv4 and handles decompression automatically.
-        // Forces IPv4 because many repo mirrors have broken IPv6 routing which causes 30s hangs.
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
@@ -47,22 +45,15 @@ public class RepoManager
     public async Task SyncRepositoriesAsync(Action<string, string> onProgress)
     {
         var configPath = PathHelper.GetPath(_rootPath, "etc/aurora/repolist");
-        if (!File.Exists(configPath))
-        {
-            AuLogger.Error("No repositories configured at etc/aurora/repolist");
-            return;
-        }
+        if (!File.Exists(configPath)) return;
 
         var repos = RepoConfigParser.Parse(File.ReadAllText(configPath));
-        if (repos.Count == 0) return;
-
         var dbDir = PathHelper.GetPath(_rootPath, "var/lib/aurora");
         Directory.CreateDirectory(dbDir);
         var gpgHome = PathHelper.GetPath(_rootPath, "etc/aurora/gnupg");
 
         foreach (var repo in repos.Values.Where(r => r.Enabled))
         {
-            // Use JSON extension for the repo database
             var repoFileName = $"{repo.Id}.json";
             var targetFile = Path.Combine(dbDir, repoFileName);
             var sigFile = targetFile + ".sig";
@@ -71,27 +62,22 @@ public class RepoManager
 
             try
             {
-                // 1. Download Database
                 await FetchFile(repo.Url, repoFileName, targetFile);
 
-                // 2. Verification
                 if (!SkipSignatureCheck)
                 {
                     await FetchFile(repo.Url, repoFileName + ".sig", sigFile);
-
                     if (!GpgHelper.VerifySignature(targetFile, sigFile, Directory.Exists(gpgHome) ? gpgHome : null))
                     {
                         File.Delete(targetFile);
                         File.Delete(sigFile);
-                        throw new Exception("Invalid GPG Signature! Database discarded.");
+                        throw new Exception("Invalid GPG Signature!");
                     }
                 }
-                
                 onProgress(repo.Name, "Done");
             }
             catch (Exception ex)
             {
-                AuLogger.Error($"Failed to sync '{repo.Name}': {ex.Message}");
                 onProgress(repo.Name, $"Failed: {ex.Message}");
             }
         }
@@ -99,17 +85,16 @@ public class RepoManager
 
     public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Action<long?, long> onProgress)
     {
-        // CRITICAL: Use pkg.FileName from the database if available.
-        // This avoids filename mismatches caused by version epochs (e.g. 1:1.0).
+        // Use Filename from DB (which may contain ':')
         var filename = !string.IsNullOrEmpty(pkg.FileName) 
             ? pkg.FileName 
             : $"{pkg.Name}-{pkg.Version}-{pkg.Arch}.au";
 
-        // Sanitize filename for local storage just in case the server sent something weird
-        var localFilename = filename.Replace(":", "_");
-        var cachePath = Path.Combine(cacheDir, localFilename);
+        // LOCAL PATH FIX: Replace ':' with '_' because colons are illegal/problematic on 
+        // many filesystems (NTFS, APFS) and cause issues with some Linux tools.
+        var localSafeFilename = filename.Replace(":", "_");
+        var cachePath = Path.Combine(cacheDir, localSafeFilename);
 
-        // Check cache and integrity
         if (File.Exists(cachePath))
         {
             if (string.IsNullOrEmpty(pkg.Checksum) || HashHelper.ComputeFileHash(cachePath) == pkg.Checksum)
@@ -118,60 +103,48 @@ public class RepoManager
                 onProgress(info.Length, info.Length);
                 return cachePath;
             }
-            AuLogger.Debug($"Cache mismatch for {localFilename}, re-downloading...");
             File.Delete(cachePath);
         }
         
         Directory.CreateDirectory(cacheDir);
-
         var configPath = PathHelper.GetPath(_rootPath, "etc/aurora/repolist");
-        if (!File.Exists(configPath)) throw new Exception("No repolist found.");
-        
         var repos = RepoConfigParser.Parse(File.ReadAllText(configPath));
         
         foreach (var repo in repos.Values.Where(r => r.Enabled))
         {
             try
             {
-                // We use the raw filename from the repo for the URL construction
+                // DOWNLOAD FIX: Pass the raw filename with colons to FetchFile
                 await FetchFile(repo.Url, filename, cachePath, onProgress);
 
-                // Verify SHA256 integrity after download
                 if (!string.IsNullOrEmpty(pkg.Checksum))
                 {
-                    var actualSum = HashHelper.ComputeFileHash(cachePath);
-                    if (!string.Equals(actualSum, pkg.Checksum, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(HashHelper.ComputeFileHash(cachePath), pkg.Checksum, StringComparison.OrdinalIgnoreCase))
                     {
                         File.Delete(cachePath);
-                        throw new InvalidDataException($"Integrity check failed: SHA256 mismatch.");
+                        throw new InvalidDataException("Integrity mismatch.");
                     }
                 }
-                
                 return cachePath;
             }
-            catch (Exception ex)
-            {
-                AuLogger.Debug($"Mirror {repo.Name} failed for {filename}: {ex.Message}");
-                // Fallthrough to next repo
-            }
+            catch { /* Try next mirror */ }
         }
-
         return null;
     }
 
     private async Task FetchFile(string baseUrl, string filename, string destination, Action<long?, long>? onProgress = null)
     {
-        // Ensure the base URL ends with a slash for Uri combining
         var baseUriString = baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/";
-        var baseUri = new Uri(baseUriString);
         
-        // Combine carefully. Uri constructor handles escaping characters in filename.
-        var fullUri = new Uri(baseUri, filename);
+        // URI FIX: If the filename contains a colon (Epoch), the Uri(base, relative) constructor 
+        // will misinterpret the filename as a URI Scheme (e.g. zlib-1:).
+        // We escape the colon as %3A to ensure it is treated strictly as a path component.
+        var escapedFilename = filename.Replace(":", "%3A");
+        var fullUri = new Uri(baseUriString + escapedFilename);
 
         if (fullUri.Scheme == "file")
         {
             var sourcePath = fullUri.LocalPath;
-            if (!File.Exists(sourcePath)) throw new FileNotFoundException($"Local file mirror not found: {sourcePath}");
             File.Copy(sourcePath, destination, overwrite: true);
             var info = new FileInfo(sourcePath);
             onProgress?.Invoke(info.Length, info.Length);
@@ -183,11 +156,10 @@ public class RepoManager
             response.EnsureSuccessStatusCode();
 
             var totalBytes = response.Content.Headers.ContentLength;
-            
             await using var downloadStream = await response.Content.ReadAsStreamAsync();
             await using var fileStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
 
-            var buffer = new byte[32768]; // 32KB buffer for faster writing
+            var buffer = new byte[32768];
             long totalDownloaded = 0;
             int bytesRead;
 
