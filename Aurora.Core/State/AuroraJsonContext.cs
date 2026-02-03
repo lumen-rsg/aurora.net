@@ -11,6 +11,5 @@ namespace Aurora.Core.State;
 [JsonSerializable(typeof(Package))]
 [JsonSerializable(typeof(AuroraManifest))] // Add this if you plan to serialize manifests to JSON
 [JsonSerializable(typeof(RepoConfig))]
-internal partial class AuroraJsonContext : JsonSerializerContext
-{
-}
+[JsonSerializable(typeof(Repository))]
+public partial class AuroraJsonContext : JsonSerializerContext { }
