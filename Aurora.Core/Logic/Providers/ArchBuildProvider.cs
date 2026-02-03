@@ -211,37 +211,34 @@ public class ArchBuildProvider : IBuildProvider
     
     private void ConfigureBuildEnvironment(ProcessStartInfo psi, MakepkgConfig c, AuroraManifest m, string srcDir, string buildDir, string startDir)
     {
-        // 1. PATH Management: Inherit system path but prioritize standard locations and Perl/Arch specific paths
         var hostPath = Environment.GetEnvironmentVariable("PATH") ?? "";
         var standardPaths = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
         var extraPaths = "/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl";
         
-        var path = $"{standardPaths}:{extraPaths}:{hostPath}";
-        if (m.Build.Options.Contains("ccache")) path = "/usr/lib/ccache/bin:" + path;
+        psi.Environment["PATH"] = $"{standardPaths}:{extraPaths}:{hostPath}";
+        if (m.Build.Options.Contains("ccache")) psi.Environment["PATH"] = "/usr/lib/ccache/bin:" + psi.Environment["PATH"];
         
-        psi.Environment["PATH"] = path;
         psi.Environment["SHELL"] = "/bin/bash";
         psi.Environment["LC_ALL"] = "C";
         psi.Environment["LANG"] = "C";
         psi.Environment["HOME"] = buildDir;
         psi.Environment["srcdir"] = srcDir;
         psi.Environment["startdir"] = startDir;
-        psi.Environment["pkgdir"] = Path.Combine(buildDir, "pkg", m.Package.Name);
+
+        // CRITICAL: Don't set pkgdir globally for GCC build. It is only for the packaging loop.
+
         psi.Environment["CARCH"] = c.Arch;
         psi.Environment["CHOST"] = c.Chost;
 
-        string Sanitize(string val)
-        {
-            if (string.IsNullOrEmpty(val)) return val;
-            var clean = val.Replace("-Wp,", "");
-            if (clean.Contains("_FORTIFY_SOURCE"))
-                return $"-U_FORTIFY_SOURCE {clean}";
-            return clean;
-        }
+        // --- NEW SMART FLAG LOGIC ---
+        // Instead of prepending -U (which breaks GCC bootstrap preprocessor tests),
+        // we add -Wno-error=cpp. This allows packages to redefine macros (like _FORTIFY_SOURCE)
+        // without it being a fatal error, while keeping the preprocessor environment "pure".
+        string WrapFlags(string val) => string.IsNullOrEmpty(val) ? val : $"{val} -Wno-error=cpp";
 
-        psi.Environment["CFLAGS"] = Sanitize(c.CFlags);
-        psi.Environment["CXXFLAGS"] = Sanitize(c.CxxFlags);
-        psi.Environment["CPPFLAGS"] = Sanitize(c.CppFlags);
+        psi.Environment["CFLAGS"] = WrapFlags(c.CFlags);
+        psi.Environment["CXXFLAGS"] = WrapFlags(c.CxxFlags);
+        psi.Environment["CPPFLAGS"] = c.CppFlags; // Keep CPPFLAGS pristine for Autotools sanity
         psi.Environment["LDFLAGS"] = c.LdFlags;
         psi.Environment["MAKEFLAGS"] = c.MakeFlags;
         psi.Environment["PACKAGER"] = c.Packager;
