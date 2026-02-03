@@ -103,17 +103,32 @@ public class ArchBuildProvider : IBuildProvider
             logAction(line);
             File.AppendAllText(logFile, line + Environment.NewLine);
             var trimmed = line.Trim();
-            if (trimmed.StartsWith("---AURORA_PACKAGE_START|")) currentPkgName = trimmed.Split('|', 2)[1];
-            else if (trimmed == "---AURORA_METADATA_START---") { capturingMetadata = true; currentMetadata.Clear(); }
+            
+            // FIXED: Marker detection
+            if (trimmed.StartsWith("---AURORA_PACKAGE_START|")) 
+            {
+                currentPkgName = trimmed.Split('|', 2)[1].Trim();
+            }
+            else if (trimmed == "---AURORA_METADATA_START---") 
+            { 
+                capturingMetadata = true; 
+                currentMetadata.Clear(); 
+            }
             else if (trimmed == "---AURORA_METADATA_END---")
             {
                 capturingMetadata = false;
-                var m = CloneManifest(manifest);
-                m.Package.Name = currentPkgName!;
-                ApplyOverrides(m, PkgInfoParser.Parse(currentMetadata.ToString()));
-                subManifests[currentPkgName!] = m;
+                if (!string.IsNullOrEmpty(currentPkgName))
+                {
+                    var m = CloneManifest(manifest);
+                    m.Package.Name = currentPkgName;
+                    ApplyOverrides(m, PkgInfoParser.Parse(currentMetadata.ToString()));
+                    subManifests[currentPkgName] = m;
+                }
             }
-            else if (capturingMetadata) currentMetadata.AppendLine(line);
+            else if (capturingMetadata) 
+            {
+                currentMetadata.AppendLine(line);
+            }
         }
         
         process.OutputDataReceived += (_, args) => HandleOutput(args.Data);
@@ -126,7 +141,13 @@ public class ArchBuildProvider : IBuildProvider
         AnsiConsole.MarkupLine("\n[bold magenta]Finalizing Artifacts...[/]");
         foreach (var (pkgName, subManifest) in subManifests)
         {
-            await ArtifactCreator.CreateAsync(subManifest, Path.Combine(absoluteBuildDir, "pkg", pkgName), absoluteStartDir);
+            var subPkgDir = Path.Combine(absoluteBuildDir, "pkg", pkgName);
+            if (!Directory.Exists(subPkgDir))
+            {
+                AnsiConsole.MarkupLine($"[yellow]Warning:[/] Skipping artifact creation for {pkgName}, directory not found.");
+                continue;
+            }
+            await ArtifactCreator.CreateAsync(subManifest, subPkgDir, absoluteStartDir);
         }
     }
 
@@ -162,7 +183,6 @@ public class ArchBuildProvider : IBuildProvider
         if (m.Build.Options.Contains("check")) sb.AppendLine("run_check");
 
         sb.AppendLine("msg \"Starting packaging phase...\"");
-        
         sb.AppendLine("ENV_FILE=$(mktemp)");
         sb.AppendLine("declare -p | grep -Ev '^declare -[a-z-]* (BASHOPTS|BASH_VERSINFO|EUID|PPID|SHELLOPTS|UID)=' > \"$ENV_FILE\" || true");
 
@@ -172,7 +192,8 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("  rm -rf \"$CURRENT_PKG_DIR\" && mkdir -p \"$CURRENT_PKG_DIR\"");
         
         sb.AppendLine("  msg \"Packaging $CURRENT_PKG_NAME...\"");
-        sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$CURRENT_PKG_NAME---\"");
+        // FIXED: Cleaner marker
+        sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$CURRENT_PKG_NAME\"");
         
         var fakerootPayload = "set -e; source \"$1\"; " +
                               "export pkgname=\"$CURRENT_PKG_NAME\"; " +
@@ -208,12 +229,10 @@ public class ArchBuildProvider : IBuildProvider
         psi.Environment["CARCH"] = c.Arch;
         psi.Environment["CHOST"] = c.Chost;
 
-        // HELPER: Sanitize flags and inject undefine for hardening macros to prevent efibootmgr errors
         string Sanitize(string val)
         {
             if (string.IsNullOrEmpty(val)) return val;
-            // Remove -Wp, prefixes entirely - modern compilers don't need them for -D/-U 
-            // and keeping them leads to nested -Wp,-Wp errors.
+            // Clean out -Wp to prevent nesting, and ensure -U follows
             var clean = val.Replace("-Wp,", "");
             if (clean.Contains("_FORTIFY_SOURCE"))
                 return $"-U_FORTIFY_SOURCE {clean}";
