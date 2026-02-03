@@ -22,7 +22,8 @@ class Program
             new AuditCommand(),
             new RecoverCommand(),
             new BuildCommand(),
-            new EditCommand()
+            new EditCommand(),
+            new ConvertCommand()
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);
