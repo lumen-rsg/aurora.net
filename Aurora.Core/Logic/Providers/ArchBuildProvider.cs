@@ -105,26 +105,24 @@ public class ArchBuildProvider : IBuildProvider
         var absoluteBuildDir = Path.GetFullPath(buildDir);
         var absoluteStartDir = Path.GetFullPath(startDir);
         var srcDir = Path.Combine(absoluteBuildDir, "src");
-        var pkgRootDir = Path.Combine(absoluteBuildDir, "pkg");
-        
-        await SafePrepareDirectory(srcDir);
-        await SafePrepareDirectory(pkgRootDir);
-        
+
+        if (Directory.Exists(srcDir)) Directory.Delete(srcDir, true);
+        Directory.CreateDirectory(srcDir);
+    
         var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST");
 
-        // FIX: Only attempt extraction if sources are present
-        if (manifest.Build.Source != null && manifest.Build.Source.Count > 0)
+        var validSources = manifest.Build.Source?.Where(s => !string.IsNullOrWhiteSpace(s)).ToList() ?? new();
+        if (validSources.Count > 0)
         {
             var extractor = new SourceExtractor();
             await extractor.ExtractAllAsync(manifest, cacheDir, srcDir, absoluteStartDir);
         }
-        else
-        {
-            AnsiConsole.MarkupLine("[grey]No sources to extract.[/]");
-        }
+
+        // Determine fakeroot availability
+        bool useFakeroot = FakerootHelper.IsAvailable();
 
         var scriptPath = Path.Combine(absoluteBuildDir, "aurora_build_script.sh");
-        var scriptContent = GenerateMonolithicScript(manifest, sysConfig, srcDir, absoluteBuildDir, startDir);
+        var scriptContent = GenerateMonolithicScript(manifest, sysConfig, srcDir, absoluteBuildDir, absoluteStartDir, useFakeroot);
         await File.WriteAllTextAsync(scriptPath, scriptContent);
         File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
@@ -138,14 +136,13 @@ public class ArchBuildProvider : IBuildProvider
             CreateNoWindow = true,
             WorkingDirectory = srcDir 
         };
-        
-        // FIX: Pass manifest to ConfigureBuildEnvironment and don't clear env
-        ConfigureBuildEnvironment(psi, sysConfig, manifest, srcDir, absoluteBuildDir, startDir);
-        
-        var fakerootPsi = FakerootHelper.WrapInFakeroot(psi);
+    
+        ConfigureBuildEnvironment(psi, sysConfig, manifest, srcDir, absoluteBuildDir, absoluteStartDir);
+    
+        // DO NOT WRAP PSI IN FAKEROOT HERE
         var logFile = Path.Combine(buildDir, "build.log");
-        
-        using var process = Process.Start(fakerootPsi);
+    
+        using var process = Process.Start(psi); 
         if (process == null) throw new Exception("Failed to start monolithic build process.");
 
         var subManifests = new Dictionary<string, AuroraManifest>();
@@ -206,62 +203,73 @@ public class ArchBuildProvider : IBuildProvider
         AnsiConsole.MarkupLine("\n[green bold]✔ Build process completed successfully![/]");
     }
 
-    private string GenerateMonolithicScript(AuroraManifest m, MakepkgConfig c, string srcDir, string buildDir, string startDir)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("#!/bin/bash");
-        sb.AppendLine("set -e");
-        sb.AppendLine("shopt -s nullglob globstar");
+   private string GenerateMonolithicScript(AuroraManifest m, MakepkgConfig c, string srcDir, string buildDir, string startDir, bool useFakeroot)
+{
+    var sb = new StringBuilder();
+    sb.AppendLine("#!/bin/bash");
+    sb.AppendLine("set -e");
+    sb.AppendLine("shopt -s nullglob globstar");
 
-        sb.AppendLine("msg() { echo \"==> $1\"; }; msg2() { echo \"  -> $1\"; };");
-        sb.AppendLine("warning() { echo \"==> WARNING: $1\" >&2; }; error() { echo \"==> ERROR: $1\" >&2; exit 1; }");
+    // Standard helpers
+    sb.AppendLine("msg() { echo \"==> $1\"; }; msg2() { echo \"  -> $1\"; };");
+    sb.AppendLine("warning() { echo \"==> WARNING: $1\" >&2; }; error() { echo \"==> ERROR: $1\" >&2; exit 1; }");
 
-        sb.AppendLine($"source '{Path.Combine(startDir, "PKGBUILD")}'");
+    sb.AppendLine($"source '{Path.Combine(startDir, "PKGBUILD")}'");
 
-        sb.AppendLine("run_prepare() { if type -t prepare &>/dev/null; then msg \"Running prepare()...\" && ( prepare ); fi; }");
-        sb.AppendLine("run_build() { if type -t build &>/dev/null; then msg \"Running build()...\" && ( build ); fi; }");
-        sb.AppendLine("run_check() { if type -t check &>/dev/null; then msg \"Running check()...\" && ( check ); fi; }");
-        
-        sb.AppendLine("scrape_metadata() {");
-        sb.AppendLine("  echo '---AURORA_METADATA_START---'");
-        sb.AppendLine("  printf 'pkgdesc = %s\\n' \"${pkgdesc:-}\"");
-        sb.AppendLine("  local arr; for arr in license provides conflict replaces depend optdepend; do");
-        sb.AppendLine("    local -n ref=\"$arr\" 2>/dev/null || continue;");
-        sb.AppendLine("    for item in \"${ref[@]}\"; do [[ -n \"$item\" ]] && printf '%s = %s\\n' \"$arr\" \"$item\"; done;");
-        sb.AppendLine("  done; echo '---AURORA_METADATA_END---';");
-        sb.AppendLine("}");
+    // Lifecycle functions (Regular User)
+    sb.AppendLine("run_prepare() { if type -t prepare &>/dev/null; then msg \"Running prepare()...\" && ( prepare ); fi; }");
+    sb.AppendLine("run_build() { if type -t build &>/dev/null; then msg \"Running build()...\" && ( build ); fi; }");
+    sb.AppendLine("run_check() { if type -t check &>/dev/null; then msg \"Running check()...\" && ( check ); fi; }");
+    
+    // Metadata scraper
+    sb.AppendLine("scrape_metadata() {");
+    sb.AppendLine("  echo '---AURORA_METADATA_START---'");
+    sb.AppendLine("  printf 'pkgdesc = %s\\n' \"${pkgdesc:-}\"");
+    sb.AppendLine("  local arr; for arr in license provides conflict replaces depend optdepend; do");
+    sb.AppendLine("    local -n ref=\"$arr\" 2>/dev/null || continue;");
+    sb.AppendLine("    for item in \"${ref[@]}\"; do [[ -n \"$item\" ]] && printf '%s = %s\\n' \"$arr\" \"$item\"; done;");
+    sb.AppendLine("  done; echo '---AURORA_METADATA_END---';");
+    sb.AppendLine("}");
 
-        sb.AppendLine("cd \"$srcdir\"");
-        sb.AppendLine("run_prepare");
-        sb.AppendLine("run_build");
-        
-        if (m.Build.Options.Contains("check"))
-        {
-            sb.AppendLine("run_check");
-        }
+    // Execution: User Space
+    sb.AppendLine("cd \"$srcdir\"");
+    sb.AppendLine("run_prepare");
+    sb.AppendLine("run_build");
+    if (m.Build.Options.Contains("check")) sb.AppendLine("run_check");
 
-        sb.AppendLine("msg \"Starting packaging phase...\"");
-        sb.AppendLine("for pkg_name_entry in \"${pkgname[@]}\"; do");
-        sb.AppendLine("  pkgdir_entry=\"" + buildDir + "/pkg/$pkg_name_entry\"");
-        sb.AppendLine("  rm -rf \"$pkgdir_entry\"");
-        sb.AppendLine("  mkdir -p \"$pkgdir_entry\"");
-        
-        sb.AppendLine("  export pkgname=\"$pkg_name_entry\"");
-        sb.AppendLine("  export pkgdir=\"$pkgdir_entry\"");
-        
-        sb.AppendLine("  msg \"Packaging $pkgname...\"");
-        sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$pkgname\"");
-        
-        sb.AppendLine("  package_func=\"package_$pkgname\"");
-        sb.AppendLine("  if ! type -t \"$package_func\" &>/dev/null; then package_func=\"package\"; fi");
-        
-        sb.AppendLine("  ( \"$package_func\" )");
-        
-        sb.AppendLine("  scrape_metadata");
-        sb.AppendLine("done");
+    // Execution: Fakeroot Space (ONLY for packaging)
+    sb.AppendLine("msg \"Entering fakeroot for packaging...\"");
+    
+    // We define a sub-script that fakeroot will execute
+    string fakerootCmd = useFakeroot ? "fakeroot --" : "";
+    
+    sb.AppendLine("for pkg_name_entry in \"${pkgname[@]}\"; do");
+    sb.AppendLine("  pkgdir_entry=\"" + buildDir + "/pkg/$pkg_name_entry\"");
+    sb.AppendLine("  rm -rf \"$pkgdir_entry\"");
+    sb.AppendLine("  mkdir -p \"$pkgdir_entry\"");
+    
+    sb.AppendLine("  msg \"Packaging $pkg_name_entry...\"");
+    sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$pkg_name_entry\"");
+    
+    // We wrap the package function call in fakeroot
+    // We must re-source the PKGBUILD inside the fakeroot subshell to restore functions
+    sb.AppendLine($"  {fakerootCmd} bash -c \"source '{Path.Combine(startDir, "PKGBUILD")}'; " +
+                  "export pkgname='$pkg_name_entry'; " +
+                  "export pkgdir='$pkgdir_entry'; " +
+                  "export srcdir='$srcdir'; " +
+                  "export startdir='" + startDir + "'; " +
+                  "package_func='package_$pkg_name_entry'; " +
+                  "if ! type -t \\\"$package_func\\\" &>/dev/null; then package_func='package'; fi; " +
+                  "cd \\\"$srcdir\\\"; \\\"$package_func\\\";\"");
+    
+    // Metadata is scraped after fakeroot exits
+    sb.AppendLine("  export pkgname=\"$pkg_name_entry\"");
+    sb.AppendLine("  export pkgdir=\"$pkgdir_entry\"");
+    sb.AppendLine("  scrape_metadata");
+    sb.AppendLine("done");
 
-        return sb.ToString();
-    }
+    return sb.ToString();
+}
     
     /// <summary>
     /// Attempts to clean a directory by moving it to a temporary name and then deleting it.
