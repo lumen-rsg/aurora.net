@@ -141,11 +141,7 @@ public class ArchBuildProvider : IBuildProvider
         foreach (var (pkgName, subManifest) in subManifests)
         {
             var subPkgDir = Path.Combine(absoluteBuildDir, "pkg", pkgName);
-            if (!Directory.Exists(subPkgDir))
-            {
-                AnsiConsole.MarkupLine($"[yellow]Warning:[/] Skipping artifact creation for {pkgName}, directory not found.");
-                continue;
-            }
+            if (!Directory.Exists(subPkgDir)) continue;
             await ArtifactCreator.CreateAsync(subManifest, subPkgDir, absoluteStartDir);
         }
     }
@@ -155,9 +151,6 @@ public class ArchBuildProvider : IBuildProvider
         var sb = new StringBuilder();
         sb.AppendLine("#!/bin/bash");
         sb.AppendLine("set -e");
-        
-        // FIX: Match standard makepkg shell options. 
-        // Enable extglob (extended pattern matching), disable nullglob/globstar to prevent unexpected behavior.
         sb.AppendLine("shopt -s extglob");
         sb.AppendLine("shopt -u nullglob globstar");
 
@@ -218,9 +211,15 @@ public class ArchBuildProvider : IBuildProvider
     
     private void ConfigureBuildEnvironment(ProcessStartInfo psi, MakepkgConfig c, AuroraManifest m, string srcDir, string buildDir, string startDir)
     {
-        psi.Environment["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
-        if (m.Build.Options.Contains("ccache")) psi.Environment["PATH"] = "/usr/lib/ccache/bin:" + psi.Environment["PATH"];
+        // 1. PATH Management: Inherit system path but prioritize standard locations and Perl/Arch specific paths
+        var hostPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+        var standardPaths = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
+        var extraPaths = "/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl";
         
+        var path = $"{standardPaths}:{extraPaths}:{hostPath}";
+        if (m.Build.Options.Contains("ccache")) path = "/usr/lib/ccache/bin:" + path;
+        
+        psi.Environment["PATH"] = path;
         psi.Environment["SHELL"] = "/bin/bash";
         psi.Environment["LC_ALL"] = "C";
         psi.Environment["LANG"] = "C";
