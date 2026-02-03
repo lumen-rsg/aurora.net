@@ -38,17 +38,13 @@ public static class RepoParser
             // --- Level 2: Start of a new package ---
             if (currentSection == Section.Packages && indent == 2 && line.StartsWith("- name:"))
             {
-                // Finalize previous package if exists
-                if (currentPackage != null)
-                {
-                    repoFile.Packages.Add(currentPackage);
-                }
+                if (currentPackage != null) repoFile.Packages.Add(currentPackage);
                 currentPackage = new Package();
                 currentList = null;
-                
-                // Parse "name: value" on the same line
+        
                 var parts = line.Substring(2).Split(':', 2);
-                if(parts.Length == 2) currentPackage.Name = parts[1].Trim().Trim('"');
+                // FIX: Added .Trim('\'').Trim('"')
+                if(parts.Length == 2) currentPackage.Name = parts[1].Trim().Trim('\'').Trim('"');
                 continue;
             }
             
@@ -67,7 +63,7 @@ public static class RepoParser
                 // Check if this is an item in the current list
                 else if (line.StartsWith("- "))
                 {
-                    currentList?.Add(line.Substring(2).Trim());
+                    currentList?.Add(line.Substring(2).Trim().Trim('\'').Trim('"'));
                 }
                 // Otherwise, it's a scalar property
                 else
@@ -106,7 +102,7 @@ public static class RepoParser
         var parts = line.Split(':', 2);
         if (parts.Length < 2) return;
         var key = parts[0].Trim();
-        var val = parts[1].Trim().Trim('"');
+        var val = parts[1].Trim().Trim('\'').Trim('"');
         switch (key)
         {
             case "version": pkg.Version = val; break;

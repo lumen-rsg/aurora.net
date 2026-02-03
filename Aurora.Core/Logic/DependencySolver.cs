@@ -44,6 +44,7 @@ public class DependencySolver
 
     private void Visit(string request, HashSet<string> visited, HashSet<string> stack, List<Package> plan)
     {
+        request = request.Trim().Trim('\'').Trim('"');
         if (_installed.Contains(request) || visited.Contains(request)) return;
 
         if (stack.Contains(request))

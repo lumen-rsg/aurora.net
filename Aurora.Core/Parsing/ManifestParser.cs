@@ -48,12 +48,9 @@ public static class ManifestParser
             {
                 if (currentList != null)
                 {
-                    // FIX: Trim spaces AND quotes
-                    var value = line.Substring(2).Trim().Trim('"').Trim('\'');
-                    if (!string.IsNullOrEmpty(value)) 
-                    {
-                        currentList.Add(value);
-                    }
+                    // FIX: Robust quote stripping
+                    var value = line.Substring(2).Trim().Trim('\'').Trim('"');
+                    if (!string.IsNullOrEmpty(value)) currentList.Add(value);
                 }
                 continue;
             }
