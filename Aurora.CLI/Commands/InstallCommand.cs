@@ -47,11 +47,19 @@ public class InstallCommand : ICommand
         var availablePackages = new List<Package>();
         if (Directory.Exists(config.RepoDir))
         {
+            // Be careful to only load the latest synced databases
             foreach (var file in Directory.GetFiles(config.RepoDir, "*.aurepo"))
             {
-                var repoContent = File.ReadAllText(file);
-                var parsedRepo = Aurora.Core.Parsing.RepoParser.Parse(repoContent);
-                availablePackages.AddRange(parsedRepo.Packages);
+                try 
+                {
+                    var repoContent = File.ReadAllText(file);
+                    var parsedRepo = Aurora.Core.Parsing.RepoParser.Parse(repoContent);
+                    availablePackages.AddRange(parsedRepo.Packages);
+                } 
+                catch (Exception ex) 
+                {
+                    AnsiConsole.MarkupLine($"[yellow]Warning: Skipping {Path.GetFileName(file)}: {ex.Message}[/]");
+                }
             }
         }
         AnsiConsole.MarkupLine("[green]DEBUG: Repositories loaded OK.[/]");
