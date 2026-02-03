@@ -225,31 +225,28 @@ public class ArchBuildProvider : IBuildProvider
         psi.Environment["srcdir"] = srcDir;
         psi.Environment["startdir"] = startDir;
 
-        // CRITICAL FIX: Do NOT set pkgdir during the build phase.
-        psi.Environment.Remove("pkgdir");
-
         psi.Environment["CARCH"] = c.Arch;
         psi.Environment["CHOST"] = c.Chost;
 
-        // --- CRITICAL FIX: Merge CPPFLAGS into CFLAGS/CXXFLAGS ---
-        // This ensures build system introspection (like in GCC, glib2) sees all required preprocessor macros.
-        var cflags = $"{c.CFlags} {c.CppFlags} -Wno-error=cpp";
-        var cxxflags = $"{c.CxxFlags} {c.CppFlags} -Wno-error=cpp";
+        // Merge logic: Combine CFLAGS/CXXFLAGS with CPPFLAGS and standard Aurora safety flags
+        // -Wno-error=cpp is vital to stop efibootmgr-style redefinition crashes
+        string Merge(string baseFlags) => $"{baseFlags} {c.CppFlags} -Wno-error=cpp".Trim();
 
-        psi.Environment["CFLAGS"] = cflags;
-        psi.Environment["CXXFLAGS"] = cxxflags;
-        // Unset CPPFLAGS to avoid double-application by smart build systems.
-        psi.Environment.Remove("CPPFLAGS"); 
-        
+        psi.Environment["CFLAGS"] = Merge(c.CFlags);
+        psi.Environment["CXXFLAGS"] = Merge(c.CxxFlags);
         psi.Environment["LDFLAGS"] = c.LdFlags;
         psi.Environment["MAKEFLAGS"] = c.MakeFlags;
         psi.Environment["PACKAGER"] = c.Packager;
+
+        // Ensure CPPFLAGS is unset so build systems don't double-apply them
+        psi.Environment.Remove("CPPFLAGS"); 
 
         if (m.Build.Options.Contains("debug")) {
             var map = $"-ffile-prefix-map={srcDir}=/usr/src/debug/{m.Package.Name}";
             psi.Environment["CFLAGS"] += $" {c.DebugCFlags} {map}";
             psi.Environment["CXXFLAGS"] += $" {c.DebugCxxFlags} {map}";
         }
+        
         if (m.Build.Options.Contains("lto")) {
             psi.Environment["CFLAGS"] += $" {c.LtoFlags}";
             psi.Environment["CXXFLAGS"] += $" {c.LtoFlags}";
