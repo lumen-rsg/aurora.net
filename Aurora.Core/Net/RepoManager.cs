@@ -13,19 +13,23 @@ namespace Aurora.Core.Net;
 public class RepoManager
 {
     private readonly string _rootPath;
-    private readonly HttpClient _client;
+    private readonly HttpClient _client; // No longer static
     public bool SkipSignatureCheck { get; set; } = false;
 
+    // The logic is now in the instance constructor
     public RepoManager(string rootPath)
     {
         _rootPath = rootPath;
 
+        // This setup now only runs when a RepoManager is actually created,
+        // not when the application starts.
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
             AutomaticDecompression = DecompressionMethods.All,
             ConnectCallback = async (context, cancellationToken) =>
             {
+                // Force IPv4 addresses to prevent hangs on misconfigured mirrors
                 var entry = await Dns.GetHostEntryAsync(context.DnsEndPoint.Host, AddressFamily.InterNetwork, cancellationToken);
                 var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
                 await socket.ConnectAsync(new IPEndPoint(entry.AddressList[0], context.DnsEndPoint.Port), cancellationToken);
@@ -38,9 +42,6 @@ public class RepoManager
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Aurora Package Manager)");
     }
 
-    /// <summary>
-    /// Reads /etc/aurora/repolist and downloads/verifies the .aurepo files.
-    /// </summary>
     public async Task SyncRepositoriesAsync(Action<string, string> onProgress)
     {
         var configPath = PathHelper.GetPath(_rootPath, "etc/aurora/repolist");
@@ -67,22 +68,17 @@ public class RepoManager
 
             try
             {
-                // Both calls now use the same unified FetchFile helper
                 await FetchFile(repo.Url, repoFileName, targetFile);
                 await FetchFile(repo.Url, repoFileName + ".asc", sigFile);
 
-                if (!SkipSignatureCheck)
+                if (!SkipSignatureCheck && !GpgHelper.VerifySignature(targetFile, sigFile, Directory.Exists(gpgHome) ? gpgHome : null))
                 {
-                    onProgress(repo.Name, "Verifying...");
-                    if (!GpgHelper.VerifySignature(targetFile, sigFile, Directory.Exists(gpgHome) ? gpgHome : null))
-                    {
-                        File.Delete(targetFile);
-                        File.Delete(sigFile);
-                        throw new Exception("Invalid GPG Signature! Repository is untrusted.");
-                    }
+                    File.Delete(targetFile);
+                    File.Delete(sigFile);
+                    throw new Exception("Invalid GPG Signature!");
                 }
                 
-                onProgress(repo.Name, SkipSignatureCheck ? "Done (Unverified)" : "Done (Signed)");
+                onProgress(repo.Name, "Done");
             }
             catch (Exception ex)
             {
@@ -92,25 +88,19 @@ public class RepoManager
         }
     }
 
-    /// <summary>
-    /// Downloads a specific package (.au) file from the configured repositories.
-    /// </summary>
     public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Action<long?, long> onProgress)
     {
         var filename = $"{pkg.Name}-{pkg.Version}-{pkg.Arch}.au";
         var cachePath = Path.Combine(cacheDir, filename);
 
-        if (File.Exists(cachePath))
+        if (File.Exists(cachePath) && !string.IsNullOrEmpty(pkg.Checksum) && HashHelper.ComputeFileHash(cachePath) == pkg.Checksum)
         {
-            if (!string.IsNullOrEmpty(pkg.Checksum) && HashHelper.ComputeFileHash(cachePath) == pkg.Checksum)
-            {
-                var info = new FileInfo(cachePath);
-                onProgress(info.Length, info.Length);
-                return cachePath;
-            }
-            File.Delete(cachePath);
+            var info = new FileInfo(cachePath);
+            onProgress(info.Length, info.Length);
+            return cachePath;
         }
-
+        
+        if (File.Exists(cachePath)) File.Delete(cachePath);
         Directory.CreateDirectory(cacheDir);
 
         var repos = RepoConfigParser.Parse(File.ReadAllText(PathHelper.GetPath(_rootPath, "etc/aurora/repolist")));
@@ -124,33 +114,26 @@ public class RepoManager
                 if (!string.IsNullOrEmpty(pkg.Checksum) && HashHelper.ComputeFileHash(cachePath) != pkg.Checksum)
                 {
                     File.Delete(cachePath);
-                    throw new InvalidDataException($"Security Error: Checksum mismatch for {pkg.Name}.");
+                    throw new InvalidDataException($"Checksum mismatch for {pkg.Name}.");
                 }
                 
                 return cachePath;
             }
-            catch { /* Try the next repo */ }
+            catch { /* Try next repo */ }
         }
 
         return null;
     }
 
-    /// <summary>
-    /// The single, unified helper for fetching any file.
-    /// </summary>
     private async Task FetchFile(string baseUrl, string filename, string destination, Action<long?, long>? onProgress = null)
     {
-        // Use Uri constructor to handle slashes correctly.
-        // Base: https://packages.lumina.1t.ru/core
-        // File: core.aurepo
-        // Result: https://packages.lumina.1t.ru/core/core.aurepo
         var baseUri = new Uri(baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/");
         var fullUri = new Uri(baseUri, filename);
 
         if (fullUri.Scheme == "file")
         {
             var sourcePath = fullUri.LocalPath;
-            if (!File.Exists(sourcePath)) throw new FileNotFoundException($"Local file not found: {sourcePath}");
+            if (!File.Exists(sourcePath)) throw new FileNotFoundException($"File not found: {sourcePath}");
             File.Copy(sourcePath, destination, overwrite: true);
             var info = new FileInfo(sourcePath);
             onProgress?.Invoke(info.Length, info.Length);
