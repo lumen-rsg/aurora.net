@@ -13,6 +13,7 @@ public class InstallCommand : ICommand
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {
+        AnsiConsole.MarkupLine("[grey]DEBUG: Starting install command...[/]");
         if (args.Length < 1) throw new ArgumentException("Usage: install <package_name_or_file>");
         string arg = args[0];
 
@@ -31,17 +32,18 @@ public class InstallCommand : ICommand
         {
             AnsiConsole.MarkupLine($"[blue]Target Package:[/] {arg}");
         }
-
+        AnsiConsole.MarkupLine("[grey]DEBUG: Initializing transaction...[/]");
         using var tx = new Transaction(config.DbPath);
         var installedPkgs = tx.GetAllPackages();
         var pkgName = targetPkg?.Name ?? arg;
+        AnsiConsole.MarkupLine("[green]DEBUG: Transaction OK.[/]");
 
         if (!config.Force && tx.Database.IsInstalled(pkgName))
         {
             AnsiConsole.MarkupLine($"[yellow]Package '{pkgName}' is already installed.[/]");
             return;
         }
-
+        AnsiConsole.MarkupLine("[grey]DEBUG: Loading repository data...[/]");
         var availablePackages = new List<Package>();
         if (Directory.Exists(config.RepoDir))
         {
@@ -52,6 +54,7 @@ public class InstallCommand : ICommand
                 availablePackages.AddRange(parsedRepo.Packages);
             }
         }
+        AnsiConsole.MarkupLine("[green]DEBUG: Repositories loaded OK.[/]");
 
         if (isLocalFile && targetPkg != null)
         {
@@ -64,8 +67,11 @@ public class InstallCommand : ICommand
             return;
         }
 
+        AnsiConsole.MarkupLine("[grey]DEBUG: Initializing dependency solver...[/]");
         AnsiConsole.MarkupLine("Resolving dependencies...");
         var solver = new DependencySolver(availablePackages, installedPkgs);
+        AnsiConsole.MarkupLine("[green]DEBUG: Solver OK.[/]");
+        AnsiConsole.MarkupLine("[grey]DEBUG: Resolving plan...[/]");
         List<Package> plan;
         try
         {
@@ -76,11 +82,13 @@ public class InstallCommand : ICommand
             AnsiConsole.MarkupLine($"[red]Resolution failed:[/] {ex.Message}");
             return;
         }
+        AnsiConsole.MarkupLine("[green]DEBUG: Plan resolved OK.[/]");
         
         AnsiConsole.MarkupLine($"[bold]Transaction Plan ({plan.Count}):[/] {string.Join(", ", plan.Select(p => p.Name))}");
         if (!config.AssumeYes && !AnsiConsole.Confirm("Proceed with installation?")) return;
 
         // --- UPDATED DOWNLOAD PHASE ---
+        AnsiConsole.MarkupLine("[grey]DEBUG: Initializing RepoManager for download...[/]");
         var repoMgr = new RepoManager(config.SysRoot);
         var packageFiles = new Dictionary<string, string>();
 
@@ -88,6 +96,8 @@ public class InstallCommand : ICommand
         {
             packageFiles[targetPkg.Name] = localFilePath;
         }
+        AnsiConsole.MarkupLine("[green]DEBUG: RepoManager OK.[/]");
+        AnsiConsole.MarkupLine("[grey]DEBUG: Starting installation phase...[/]");
 
         await AnsiConsole.Progress()
             .Columns(new ProgressColumn[]

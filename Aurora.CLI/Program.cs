@@ -114,7 +114,19 @@ class Program
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red bold]Error:[/] {Markup.Escape(ex.Message)}");
+                AnsiConsole.MarkupLine($"[red bold]FATAL ERROR:[/] {Markup.Escape(ex.Message)}");
+
+                // --- NEW: Detailed Exception Inspector ---
+                // This will tell us exactly WHICH class failed to initialize and WHY.
+                if (ex is TypeInitializationException tie && tie.InnerException != null)
+                {
+                    AnsiConsole.Write(new Rule("[yellow]Inner Exception Details[/]").RuleStyle("yellow"));
+                    AnsiConsole.MarkupLine($"[yellow]Type:[/] {tie.TypeName}");
+                    AnsiConsole.MarkupLine($"[red]Cause:[/] {Markup.Escape(tie.InnerException.Message)}");
+                    AnsiConsole.WriteException(tie.InnerException, ExceptionFormats.ShortenPaths);
+                }
+                // ------------------------------------------
+
                 return 1;
             }
         }
