@@ -37,6 +37,13 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, bool skipDownload, string startDir)
     {
+        // FIX: Early return if there are no sources (Meta-packages)
+        if (manifest.Build.Source == null || manifest.Build.Source.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[grey]No sources to download (Meta-package).[/]");
+            return;
+        }
+
         if (!Directory.Exists(downloadDir)) Directory.CreateDirectory(downloadDir);
 
         if (skipDownload)
@@ -61,6 +68,8 @@ public class ArchBuildProvider : IBuildProvider
                 {
                     foreach (var sourceStr in manifest.Build.Source)
                     {
+                        if (string.IsNullOrWhiteSpace(sourceStr)) continue;
+
                         var entry = new SourceEntry(sourceStr);
                         var task = ctx.AddTask($"[grey]{Markup.Escape(entry.FileName)}[/]");
                         await sourceMgr.FetchSourceAsync(entry, downloadDir, (total, current) => 
@@ -80,13 +89,17 @@ public class ArchBuildProvider : IBuildProvider
                 });
         }
 
-        var integrity = new IntegrityManager();
-        integrity.VerifyChecksums(manifest, downloadDir, startDir);
-
-        if (!skipGpg)
+        // Only verify if sources exist
+        if (manifest.Build.Source.Any())
         {
-            var sigVerifier = new SignatureVerifier();
-            sigVerifier.VerifySignatures(manifest, downloadDir, startDir);
+            var integrity = new IntegrityManager();
+            integrity.VerifyChecksums(manifest, downloadDir, startDir);
+
+            if (!skipGpg)
+            {
+                var sigVerifier = new SignatureVerifier();
+                sigVerifier.VerifySignatures(manifest, downloadDir, startDir);
+            }
         }
     }
 
@@ -102,8 +115,16 @@ public class ArchBuildProvider : IBuildProvider
         
         var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST");
 
-        var extractor = new SourceExtractor();
-        await extractor.ExtractAllAsync(manifest, cacheDir, srcDir, absoluteStartDir);
+        // FIX: Only attempt extraction if sources are present
+        if (manifest.Build.Source != null && manifest.Build.Source.Count > 0)
+        {
+            var extractor = new SourceExtractor();
+            await extractor.ExtractAllAsync(manifest, cacheDir, srcDir, absoluteStartDir);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[grey]No sources to extract.[/]");
+        }
 
         var scriptPath = Path.Combine(absoluteBuildDir, "aurora_build_script.sh");
         var scriptContent = GenerateMonolithicScript(manifest, sysConfig, srcDir, absoluteBuildDir, startDir);
