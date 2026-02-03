@@ -163,8 +163,6 @@ public class ArchBuildProvider : IBuildProvider
 
         sb.AppendLine("msg \"Starting packaging phase...\"");
         
-        // --- IMPROVED ENVIRONMENT CLONING ---
-        // Filter out read-only bash variables that cause 'Permission Denied' or 'Readonly' errors during source
         sb.AppendLine("ENV_FILE=$(mktemp)");
         sb.AppendLine("declare -p | grep -Ev '^declare -[a-z-]* (BASHOPTS|BASH_VERSINFO|EUID|PPID|SHELLOPTS|UID)=' > \"$ENV_FILE\" || true");
 
@@ -174,7 +172,7 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("  rm -rf \"$CURRENT_PKG_DIR\" && mkdir -p \"$CURRENT_PKG_DIR\"");
         
         sb.AppendLine("  msg \"Packaging $CURRENT_PKG_NAME...\"");
-        sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$CURRENT_PKG_NAME\"");
+        sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$CURRENT_PKG_NAME---\"");
         
         var fakerootPayload = "set -e; source \"$1\"; " +
                               "export pkgname=\"$CURRENT_PKG_NAME\"; " +
@@ -197,19 +195,34 @@ public class ArchBuildProvider : IBuildProvider
     
     private void ConfigureBuildEnvironment(ProcessStartInfo psi, MakepkgConfig c, AuroraManifest m, string srcDir, string buildDir, string startDir)
     {
-        psi.Environment["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
-        if (m.Build.Options.Contains("ccache")) psi.Environment["PATH"] = "/usr/lib/ccache/bin:" + psi.Environment["PATH"];
+        // DO NOT CLEAR ENVIRONMENT - Tools like m4 require existing system env vars
+        
+        var path = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
+        if (m.Build.Options.Contains("ccache")) path = "/usr/lib/ccache/bin:" + path;
+        
+        psi.Environment["PATH"] = path;
         psi.Environment["SHELL"] = "/bin/bash";
         psi.Environment["LC_ALL"] = "C";
         psi.Environment["LANG"] = "C";
         psi.Environment["HOME"] = buildDir;
         psi.Environment["srcdir"] = srcDir;
         psi.Environment["startdir"] = startDir;
+        
+        // Ensure pkgdir is set to the default main package dir for build/prepare phase
+        psi.Environment["pkgdir"] = Path.Combine(buildDir, "pkg", m.Package.Name);
+
         psi.Environment["CARCH"] = c.Arch;
         psi.Environment["CHOST"] = c.Chost;
-        psi.Environment["CFLAGS"] = c.CFlags;
-        psi.Environment["CXXFLAGS"] = c.CxxFlags;
-        psi.Environment["CPPFLAGS"] = c.CppFlags;
+        
+        // --- SMART FLAG WRAPPER: Avoid Redefinition Errors ---
+        // We use the -U flag to undefine _FORTIFY_SOURCE before setting it to our system standard.
+        // This prevents the "redefined" error in packages like efibootmgr.
+        var cppFlags = c.CppFlags.Replace("-D_FORTIFY_SOURCE=", "-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=");
+        var cFlags = c.CFlags.Replace("-D_FORTIFY_SOURCE=", "-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=");
+
+        psi.Environment["CFLAGS"] = cFlags;
+        psi.Environment["CXXFLAGS"] = c.CxxFlags.Replace("-D_FORTIFY_SOURCE=", "-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=");
+        psi.Environment["CPPFLAGS"] = cppFlags;
         psi.Environment["LDFLAGS"] = c.LdFlags;
         psi.Environment["MAKEFLAGS"] = c.MakeFlags;
         psi.Environment["PACKAGER"] = c.Packager;
