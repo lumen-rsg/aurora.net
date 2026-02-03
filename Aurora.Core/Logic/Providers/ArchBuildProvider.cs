@@ -104,7 +104,6 @@ public class ArchBuildProvider : IBuildProvider
             File.AppendAllText(logFile, line + Environment.NewLine);
             var trimmed = line.Trim();
             
-            // FIXED: Marker detection
             if (trimmed.StartsWith("---AURORA_PACKAGE_START|")) 
             {
                 currentPkgName = trimmed.Split('|', 2)[1].Trim();
@@ -156,7 +155,11 @@ public class ArchBuildProvider : IBuildProvider
         var sb = new StringBuilder();
         sb.AppendLine("#!/bin/bash");
         sb.AppendLine("set -e");
-        sb.AppendLine("shopt -s nullglob globstar");
+        
+        // FIX: Match standard makepkg shell options. 
+        // Enable extglob (extended pattern matching), disable nullglob/globstar to prevent unexpected behavior.
+        sb.AppendLine("shopt -s extglob");
+        sb.AppendLine("shopt -u nullglob globstar");
 
         sb.AppendLine("msg() { echo \"==> $1\"; }; msg2() { echo \"  -> $1\"; };");
         sb.AppendLine("warning() { echo \"==> WARNING: $1\" >&2; }; error() { echo \"==> ERROR: $1\" >&2; exit 1; }");
@@ -192,10 +195,9 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("  rm -rf \"$CURRENT_PKG_DIR\" && mkdir -p \"$CURRENT_PKG_DIR\"");
         
         sb.AppendLine("  msg \"Packaging $CURRENT_PKG_NAME...\"");
-        // FIXED: Cleaner marker
         sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$CURRENT_PKG_NAME\"");
         
-        var fakerootPayload = "set -e; source \"$1\"; " +
+        var fakerootPayload = "set -e; shopt -s extglob; shopt -u nullglob; source \"$1\"; " +
                               "export pkgname=\"$CURRENT_PKG_NAME\"; " +
                               "export pkgdir=\"$CURRENT_PKG_DIR\"; " +
                               "source '" + pkgbuild + "'; " +
@@ -232,7 +234,6 @@ public class ArchBuildProvider : IBuildProvider
         string Sanitize(string val)
         {
             if (string.IsNullOrEmpty(val)) return val;
-            // Clean out -Wp to prevent nesting, and ensure -U follows
             var clean = val.Replace("-Wp,", "");
             if (clean.Contains("_FORTIFY_SOURCE"))
                 return $"-U_FORTIFY_SOURCE {clean}";
