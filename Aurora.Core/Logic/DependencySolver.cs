@@ -42,50 +42,53 @@ public class DependencySolver
         return plan;
     }
 
-    private void Visit(string request, HashSet<string> visited, HashSet<string> stack, List<Package> plan)
+    private void Visit(string rawRequest, HashSet<string> visited, HashSet<string> stack, List<Package> plan)
     {
-        request = request.Trim().Trim('\'').Trim('"');
-        if (_installed.Contains(request) || visited.Contains(request)) return;
+        // 1. Parse the request (e.g., "linux-api-headers>=4.10")
+        var request = new DependencyRequest(rawRequest);
 
-        if (stack.Contains(request))
-            throw new Exception($"Circular dependency detected: {request}");
+        // Check if already satisfied by installed packages or planned packages
+        if (_installed.Contains(request.Name) || visited.Contains(request.Name)) return;
 
-        stack.Add(request);
+        if (stack.Contains(request.Name))
+            throw new Exception($"Circular dependency detected: {request.Name}");
 
-        // 1. Find the provider for this request
-        // A request could be a real package name OR a virtual "provides" (soname)
-        Package? provider = null;
+        stack.Add(request.Name);
 
-        if (_repository.ContainsKey(request))
+        // 2. Find Candidate
+        Package? candidate = null;
+
+        // Try direct name match
+        if (_repository.TryGetValue(request.Name, out var pkg))
         {
-            provider = _repository[request];
+            candidate = pkg;
         }
-        else if (_providesMap.TryGetValue(request, out var providers))
+        // Try virtual provides (sonames)
+        else if (_providesMap.TryGetValue(request.Name, out var providers))
         {
-            // Pick the first provider (in the future, we can add logic to pick the best)
-            provider = providers.First();
-        }
-
-        if (provider == null)
-            throw new Exception($"Target not found: {request}");
-
-        // If we found a provider but its NAME is different from the request (e.g. request libssl.so provided by openssl)
-        // Check if the actual provider name is already visited/installed
-        if (visited.Contains(provider.Name) || _installed.Contains(provider.Name))
-        {
-            stack.Remove(request);
-            return;
+            candidate = providers.First();
         }
 
-        visited.Add(provider.Name);
+        if (candidate == null)
+            throw new Exception($"Target not found: {rawRequest}");
 
-        // 2. Visit dependencies of the provider
-        foreach (var dep in provider.Depends)
+        // 3. Validate Version Constraint
+        if (!request.IsSatisfiedBy(candidate))
+        {
+            throw new Exception($"Version mismatch for {request.Name}. " +
+                                $"Requested: {request.Operator}{request.Version}, " +
+                                $"Available: {candidate.Version}");
+        }
+
+        // 4. Recurse
+        visited.Add(candidate.Name);
+
+        foreach (var dep in candidate.Depends)
         {
             Visit(dep, visited, stack, plan);
         }
 
-        stack.Remove(request);
-        plan.Add(provider);
+        stack.Remove(request.Name);
+        plan.Add(candidate);
     }
 }
