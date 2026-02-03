@@ -1,4 +1,5 @@
 using Aurora.Core.Models;
+using Spectre.Console;
 
 namespace Aurora.Core.Logic;
 
@@ -61,28 +62,45 @@ public class DependencySolver
         // 1. Try Name Match
         if (_repository.TryGetValue(request.Name, out var pkg))
         {
-            // Check if the PACKAGE version satisfies the request
             if (request.IsSatisfiedBy(pkg))
             {
                 candidate = pkg;
             }
+            else
+            {
+                AnsiConsole.MarkupLine($"[grey]DEBUG: Rejected '{pkg.Name} {pkg.Version}' for '{rawRequest}' (Version mismatch)[/]");
+            }
         }
 
-        // 2. Try Provides Match (if name match failed or version didn't satisfy)
+        // 2. Try Provides Match
         if (candidate == null && _providesMap.TryGetValue(request.Name, out var providers))
         {
-            // Find a provider whose specific Provision version satisfies the request
-            var match = providers.FirstOrDefault(p => p.Provision.Satisfies(request));
-            if (match.Pkg != null)
+            // Debugging the provides lookup
+            foreach (var p in providers)
             {
-                candidate = match.Pkg;
+                bool match = p.Provision.Satisfies(request);
+                if (match)
+                {
+                    candidate = p.Pkg;
+                    break;
+                }
+                else
+                {
+                    AnsiConsole.MarkupLine($"[grey]DEBUG: Rejected provider '{p.Pkg.Name}' provides '{p.Provision.Name} {p.Provision.Operator} {p.Provision.Version}' for request '{rawRequest}'[/]");
+                }
             }
         }
 
         if (candidate == null)
-            throw new Exception($"Target not found or version mismatch: {rawRequest}");
+        {
+            // Help the user debug the repo state
+            if (_providesMap.ContainsKey(request.Name))
+            {
+                throw new Exception($"Version mismatch for {request.Name}. See DEBUG logs above.");
+            }
+            throw new Exception($"Target not found: {rawRequest}");
+        }
 
-        // If the candidate we found is already visited/installed under its real name, stop.
         if (visited.Contains(candidate.Name) || _installed.Contains(candidate.Name))
         {
             stack.Remove(request.Name);
