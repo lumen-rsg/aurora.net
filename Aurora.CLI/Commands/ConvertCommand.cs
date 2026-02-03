@@ -55,6 +55,10 @@ public class ConvertCommand : ICommand
             manifest.Files.SourceHash = Aurora.Core.Security.HashHelper.ComputeFileHash(inputFile);
 
             AnsiConsole.MarkupLine($"[green]Identify:[/] {manifest.Package.Name} v{manifest.Package.Version}");
+            
+            // --- NEW: Run ELF Linker on the extracted temp directory ---
+            // This upgrades the dumb Arch package into a smart Aurora package
+            await ElfLinker.ProcessArtifactsAsync(manifest, tempDir);
 
             // 3. Cleanup Arch Metadata
             File.Delete(pkgInfoPath);

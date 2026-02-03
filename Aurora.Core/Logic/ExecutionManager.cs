@@ -42,37 +42,44 @@ public class ExecutionManager
         Directory.CreateDirectory(_pkgDir);
     }
 
-    public async Task RunBuildFunctionAsync(string functionName, Action<string>? onLineReceived = null)
+        public async Task RunBuildFunctionAsync(string functionName, Action<string>? logAction = null)
     {
         AnsiConsole.MarkupLine($"[cyan]=> Running {functionName}()...[/]");
 
         var logFile = Path.Combine(_buildDir, "build.log");
         var shimPath = Path.Combine(_srcDir, $"aurora_{functionName}_shim.sh");
         
+        // The Build Shim:
+        // 1. Sets strict error handling
+        // 2. Defines message helpers
+        // 3. Sources the PKGBUILD
+        // 4. Executes the function
         var shim = new StringBuilder();
         shim.AppendLine("#!/bin/bash");
-        shim.AppendLine("set -e");
+        shim.AppendLine("set -e"); // Exit immediately on error
+        shim.AppendLine("shopt -s nullglob globstar"); // Bash sanity
         
-        // Export variables for the script
+        // Export standard makepkg variables
         shim.AppendLine($"export srcdir='{_srcDir}'");
         shim.AppendLine($"export pkgdir='{_pkgDir}'");
         shim.AppendLine($"export startdir='{_startDir}'");
         
-        // Helpers
-        shim.AppendLine("msg() { echo \"  -> $1\"; }; msg2() { echo \"    $1\"; }; warning() { echo \"  -> WARNING: $1\" >&2; }; error() { echo \"  -> ERROR: $1\" >&2; }");
+        // Define makepkg message stubs so scripts don't crash
+        shim.AppendLine("msg() { echo \"  -> $1\"; }; msg2() { echo \"    $1\"; }");
+        shim.AppendLine("warning() { echo \"  -> WARNING: $1\" >&2; }; error() { echo \"  -> ERROR: $1\" >&2; }");
+        shim.AppendLine("plain() { echo \"    $1\"; }");
         
+        // Source PKGBUILD
         shim.AppendLine($"source '{Path.Combine(_startDir, "PKGBUILD")}'");
         
-        shim.AppendLine($"if type -t {functionName} &>/dev/null; then");
+        // Execute the requested function if it exists
+        shim.AppendLine($"if type -t {functionName} | grep -q 'function'; then");
         shim.AppendLine($"    cd \"$srcdir\"");
         shim.AppendLine($"    {functionName}");
         shim.AppendLine("fi");
 
-        File.WriteAllText(shimPath, shim.ToString());
-        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
-        {
-            File.SetUnixFileMode(shimPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        await File.WriteAllTextAsync(shimPath, shim.ToString());
+        File.SetUnixFileMode(shimPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
         var psi = new ProcessStartInfo
         {
@@ -85,112 +92,97 @@ public class ExecutionManager
             WorkingDirectory = _srcDir
         };
 
-        // 1. Setup Environment (Sets PATH, LC_ALL, and M4)
         ConfigureEnvironment(psi);
-        
-        // 2. Ensure CONFIG_SHELL is set (Autoconf needs this to be consistent)
-        psi.Environment["CONFIG_SHELL"] = "/bin/bash";
-
-        // DELETE THIS BLOCK IF IT EXISTS IN YOUR FILE:
-        // if (psi.Environment.ContainsKey("M4")) psi.Environment.Remove("M4");  <-- DELETE THIS
 
         using var process = Process.Start(psi);
         if (process == null) throw new Exception($"Failed to start process for {functionName}");
 
-        void LogToFile(string? data)
+        // Thread-safe logging
+        void LogOutput(string? data, bool isError)
         {
             if (data == null) return;
-            onLineReceived?.Invoke(data);
+            // Filter empty lines to reduce noise
+            if (string.IsNullOrWhiteSpace(data)) return;
+
+            // Log to file
             File.AppendAllText(logFile, data + Environment.NewLine);
+            
+            // Forward to UI
+            logAction?.Invoke(data);
         }
 
-        process.OutputDataReceived += (_, args) => LogToFile(args.Data);
-        process.ErrorDataReceived += (_, args) => LogToFile(args.Data);
+        process.OutputDataReceived += (_, args) => LogOutput(args.Data, false);
+        process.ErrorDataReceived += (_, args) => LogOutput(args.Data, true);
 
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         
         await process.WaitForExitAsync();
 
+        // Cleanup shim
         try { File.Delete(shimPath); } catch {}
 
         if (process.ExitCode != 0)
         {
-            throw new Exception($"Function '{functionName}' failed with exit code {process.ExitCode}. See {logFile} for details.");
+            throw new Exception($"Function '{functionName}' failed with exit code {process.ExitCode}. Check build.log for details.");
         }
     }
 
     private void ConfigureEnvironment(ProcessStartInfo psi)
     {
-        // 1. Sanitize (Remove problematic vars)
-        psi.Environment.Remove("ACLOCAL_PATH");
-        psi.Environment.Remove("AUTOMAKE_FLAGS");
-        psi.Environment.Remove("AUTOCONF_FLAGS");
-        psi.Environment.Remove("GETTEXT_PATH");
+        psi.Environment.Clear();
 
-        // 2. Set Core Vars
+        // 1. PATH (Standard + CCache)
+        var path = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
+        if (_manifest.Build.Environment.Contains("ccache"))
+        {
+            path = "/usr/lib/ccache/bin:" + path;
+        }
+        psi.Environment["PATH"] = path;
+
+        // 2. Locale & Home
+        psi.Environment["LC_ALL"] = "C";
+        psi.Environment["LANG"] = "C";
+        // Some build tools (cargo, go) need a writable HOME. 
+        // We use the build dir to keep it self-contained or fall back to /tmp
+        psi.Environment["HOME"] = _buildDir; 
+
+        // 3. Makepkg Directory Vars
         psi.Environment["srcdir"] = _srcDir;
         psi.Environment["pkgdir"] = _pkgDir;
         psi.Environment["startdir"] = _startDir;
-        psi.Environment["LC_ALL"] = "C";
-        psi.Environment["LANG"] = "C";
-        
-        // 3. Flags (from config)
-        var cflags = _sysConfig.CFlags;
-        var cxxflags = _sysConfig.CxxFlags;
 
-        if (_manifest.Build.Options.Contains("debug"))
-        {
-            cflags += " " + _sysConfig.DebugCFlags;
-            cxxflags += " " + _sysConfig.DebugCxxFlags;
-            var map = $"-ffile-prefix-map={_srcDir}=/usr/src/debug/{_manifest.Package.Name}";
-            cflags += " " + map;
-            cxxflags += " " + map;
-        }
+        // 4. Architecture & Host (CRITICAL for Autoconf)
+        psi.Environment["CARCH"] = _sysConfig.Arch;
+        psi.Environment["CHOST"] = _sysConfig.Chost;
 
-        psi.Environment["CFLAGS"] = cflags;
-        psi.Environment["CXXFLAGS"] = cxxflags;
+        // 5. Compiler Flags
+        psi.Environment["CFLAGS"] = _sysConfig.CFlags;
+        psi.Environment["CXXFLAGS"] = _sysConfig.CxxFlags;
+        psi.Environment["CPPFLAGS"] = _sysConfig.CppFlags; // <--- Previously Missing
         psi.Environment["LDFLAGS"] = _sysConfig.LdFlags;
         psi.Environment["MAKEFLAGS"] = _sysConfig.MakeFlags;
+
+        // 6. Handle Debug & LTO Options
+        bool debug = _manifest.Build.Options.Contains("debug");
+        bool lto = _manifest.Build.Options.Contains("lto");
+
+        if (debug)
+        {
+            var map = $"-ffile-prefix-map={_srcDir}=/usr/src/debug/{_manifest.Package.Name}";
+            psi.Environment["CFLAGS"] += $" {_sysConfig.DebugCFlags} {map}";
+            psi.Environment["CXXFLAGS"] += $" {_sysConfig.DebugCxxFlags} {map}";
+        }
+
+        if (lto)
+        {
+            psi.Environment["CFLAGS"] += $" {_sysConfig.LtoFlags}";
+            psi.Environment["CXXFLAGS"] += $" {_sysConfig.LtoFlags}";
+            psi.Environment["LDFLAGS"] += $" {_sysConfig.LtoFlags}";
+        }
         
-        // 4. PATH Sanitization
-        var currentPath = Environment.GetEnvironmentVariable("PATH") ?? "";
-        var requiredPaths = new List<string> 
-        { 
-            "/usr/local/bin", "/usr/bin", "/bin", 
-            "/usr/local/sbin", "/usr/sbin", "/sbin" 
-        };
-
-        if (_manifest.Build.Environment.Contains("ccache"))
-        {
-            requiredPaths.Insert(0, "/usr/lib/ccache/bin");
-        }
-
-        var existingParts = currentPath.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
-        foreach (var part in existingParts)
-        {
-            if (!requiredPaths.Contains(part)) requiredPaths.Add(part);
-        }
-        psi.Environment["PATH"] = string.Join(Path.PathSeparator, requiredPaths);
-
-        // --- FIX: Explicitly set critical tools ---
-        // Map: binary_name -> ENV_VAR_NAME
-        var criticalTools = new Dictionary<string, string>
-        {
-            { "m4", "M4" },
-            { "perl", "PERL" },
-            { "texi2pdf", "TEXI2PDF" },
-            { "make", "MAKE" } 
-        };
-
-        foreach (var tool in criticalTools)
-        {
-            string? toolAbsPath = FindExecutable(tool.Key, requiredPaths);
-            if (!string.IsNullOrEmpty(toolAbsPath))
-            {
-                psi.Environment[tool.Value] = toolAbsPath;
-            }
-        }
+        // 7. Identity
+        psi.Environment["PACKAGER"] = _sysConfig.Packager;
     }
 
     private string? FindExecutable(string name, List<string> paths)
@@ -228,8 +220,12 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
         shim.AppendLine($"if type -t \"{functionName}\" &>/dev/null; then cd \"$srcdir\" && \"{functionName}\"; fi");
 
         shim.AppendLine("print_meta_arr() {");
-        shim.AppendLine("  local key=$1; local var=\"${1}[@]\"; echo \"  $key:\"");
-        shim.AppendLine("  for x in \"${!var}\"; do [[ -n \"$x\" ]] && printf \"    - \\\"%s\\\"\\n\" \"$x\"; done");
+        shim.AppendLine("  local key=$1;");
+        shim.AppendLine("  eval \"local arr_val=(\\\"${${key}[@]-}\\\")\""); // Safer array expansion
+        shim.AppendLine("  echo \"  $key:\"");
+        shim.AppendLine("  for x in \"${arr_val[@]}\"; do");
+        shim.AppendLine("    [[ -n \"$x\" ]] && printf \"    - \\\"%s\\\"\\n\" \"$x\";");
+        shim.AppendLine("  done");
         shim.AppendLine("}");
 
         shim.AppendLine("echo '---AURORA_OVERRIDE_START---'");

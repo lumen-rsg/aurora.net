@@ -11,12 +11,12 @@ public static class PackageInstaller
     
     private static readonly HashSet<string> _ignoredFiles = new()
     {
-        "aurora.meta",
-        ".AURORA_META",
-        ".INSTALL",
-        ".AURORA_SCRIPTS",
-        ".MTREE",
-        ".PKGINFO"
+        ".PKGINFO",    // <--- Standard Arch Metadata
+        ".INSTALL",    // <--- Install Scripts
+        ".MTREE",      // <--- Binary Tree Info (Arch)
+        ".BUILDINFO",  // <--- Build Environment Info (Arch)
+        "aurora.meta", // <--- Legacy support
+        ".AURORA_META"
     };
     
     // UPDATE: Callback now takes (PhysicalPath, ManifestPath)
@@ -126,21 +126,21 @@ public static class PackageInstaller
             var name = entry.Name.Replace('\\', '/');
             if (name.StartsWith("./")) name = name.Substring(2);
 
-            // Check for new Contract OR Legacy format
-            if (name == "aurora.meta" || name == ".AURORA_META")
+            // CHANGED: Look for standard Arch .PKGINFO
+            if (name == ".PKGINFO")
             {
                 using var stream = entry.DataStream;
                 if (stream == null) throw new InvalidDataException("Manifest entry is empty.");
-                
+            
                 using var reader = new StreamReader(stream, Encoding.UTF8);
                 var content = reader.ReadToEnd();
-                
-                // Use our Parser
-                return Aurora.Core.Parsing.PackageParser.ParseManifest(content);
+            
+                // CHANGED: Use the PKGINFO parser
+                return Aurora.Core.Parsing.PackageParser.ParsePkgInfo(content);
             }
         }
 
-        throw new InvalidDataException("No metadata file (aurora.meta) found in package.");
+        throw new InvalidDataException("No metadata file (.PKGINFO) found in package.");
     }
 
     private static void ApplyMetadata(TarEntry entry, string path, bool isSymlink = false)

@@ -118,6 +118,21 @@ public class EditCommand : ICommand
                 .DefaultValue(current)
                 .AllowEmpty());
 
+        // SAFETY: Create backup
+        File.Copy(path, path + ".bak", overwrite: true);
+
+        try 
+        {
+            ApplyChanges(path, field.Name, newValue, field.IsArray);
+            AnsiConsole.MarkupLine("[green]✔ Field updated.[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error updating file:[/] {ex.Message}");
+            AnsiConsole.MarkupLine("[yellow]Restoring backup...[/]");
+            File.Move(path + ".bak", path, overwrite: true);
+        }
+
         ApplyChanges(path, field.Name, newValue, field.IsArray);
         AnsiConsole.MarkupLine("[green]✔ Field updated.[/] [grey]Press any key...[/]");
         Console.ReadKey(true);

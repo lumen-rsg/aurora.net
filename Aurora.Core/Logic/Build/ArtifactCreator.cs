@@ -15,32 +15,35 @@ public static class ArtifactCreator
 
         AnsiConsole.MarkupLine($"[bold]Compressing artifact:[/] [cyan]{fileName}[/]");
 
-        // 1. Calculate installed size (approximate)
+        // 1. Auto-Link (ELF Scanning)
+        // This populates manifest.Metadata.Provides with "libreadline.so=8-64"
+        await ElfLinker.ProcessArtifactsAsync(manifest, pkgDir);
+
+        // 2. Calculate Size
         manifest.Files.PackageSize = GetDirectorySize(pkgDir);
 
-        // 2. Source Hash
-        if (string.IsNullOrEmpty(manifest.Files.SourceHash) && manifest.Build.Sha256Sums.Count > 0)
-        {
-            manifest.Files.SourceHash = manifest.Build.Sha256Sums[0];
-        }
+        // 3. Write .PKGINFO (The standard Arch format)
+        var metaContent = ManifestWriter.SerializeToPkgInfo(manifest);
+    
+        // NOTE: makepkg puts .PKGINFO at the root.
+        File.WriteAllText(Path.Combine(pkgDir, ".PKGINFO"), metaContent);
 
-        // 3. Write metadata
-        var metaContent = ManifestWriter.Serialize(manifest);
-        File.WriteAllText(Path.Combine(pkgDir, "aurora.meta"), metaContent);
-
-        // 4. Create Gzipped Tar
+        // 4. Create Archive (Zstd or Gzip)
         if (File.Exists(outputPath)) File.Delete(outputPath);
 
+        // Switch to TarWriter...
+        // IMPORTANT: Ensure .PKGINFO is the FIRST entry for speed? 
+        // Usually standard tar tools handle it, but it's good practice.
         using (var fs = File.Create(outputPath))
-        using (var gz = new GZipStream(fs, CompressionLevel.Optimal))
+        using (var gz = new GZipStream(fs, CompressionLevel.Optimal)) 
         using (var tar = new TarWriter(gz, TarEntryFormat.Pax))
         {
             await AddDirectoryToTarRecursive(tar, pkgDir, "");
         }
 
-        // Remove the meta file from the source dir after packing to leave it clean? 
-        // makepkg usually leaves .PKGINFO there. We can leave it.
-
+        // Cleanup: We don't delete .PKGINFO from source dir usually, 
+        // but in a clean build env the whole pkgDir is wiped anyway.
+    
         AnsiConsole.MarkupLine($"[green]✔ Artifact created at {outputPath}[/]");
     }
 

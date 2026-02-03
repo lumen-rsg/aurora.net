@@ -57,34 +57,57 @@ public class PackageDatabase : IDisposable
         return (int)(long)cmd.ExecuteScalar()!;
     }
 
+    // Replace the existing GetAllPackages with this optimized version
     public List<Package> GetAllPackages(SqliteTransaction? tx = null)
     {
-        var list = new List<Package>();
-        using var cmd = _connection.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = "SELECT id, name, version, arch, description, is_broken FROM packages";
-        
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        var packages = new Dictionary<long, Package>();
+    
+        // 1. Fetch all packages
+        using (var cmd = _connection.CreateCommand())
         {
-            var id = reader.GetInt64(0);
-            var pkg = new Package 
-            { 
-                Name = reader.GetString(1),
-                Version = reader.GetString(2),
-                Arch = reader.GetString(3),
-                Description = reader.IsDBNull(4) ? null : reader.GetString(4),
-                IsBroken = reader.GetInt32(5) == 1
-            };
-            
-            // FIX: Load dependencies AND conflicts for every package
-            // This ensures Audit/ConflictValidator sees the installed conflicts
-            pkg.Depends = GetDeps(id, "dep", tx);
-            pkg.Conflicts = GetDeps(id, "conflict", tx);
-            
-            list.Add(pkg);
+            cmd.Transaction = tx;
+            cmd.CommandText = "SELECT id, name, version, arch, description, is_broken FROM packages";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var id = reader.GetInt64(0);
+                packages[id] = new Package 
+                { 
+                    Name = reader.GetString(1),
+                    Version = reader.GetString(2),
+                    Arch = reader.GetString(3),
+                    Description = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    IsBroken = reader.GetInt32(5) == 1
+                };
+            }
         }
-        return list;
+
+        if (packages.Count == 0) return new List<Package>();
+
+        // 2. Fetch all dependencies/conflicts in one query
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "SELECT package_id, dep_name, type FROM dependencies";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var pid = reader.GetInt64(0);
+                if (packages.TryGetValue(pid, out var pkg))
+                {
+                    var name = reader.GetString(1);
+                    var type = reader.GetString(2);
+                
+                    if (type == "dep") pkg.Depends.Add(name);
+                    else if (type == "conflict") pkg.Conflicts.Add(name);
+                }
+            }
+        }
+
+        // 3. Optional: Fetch files if needed (usually not needed for simple listing, 
+        // strictly lazily load files or fetch in batch only when strictly required).
+    
+        return packages.Values.ToList();
     }
 
     public Package? GetPackage(string packageName, SqliteTransaction? tx = null)

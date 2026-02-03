@@ -13,6 +13,7 @@ public class SourceManager
         _providers.Add(new LocalProvider(projectDir)); // Pass to LocalProvider
         _providers.Add(new HttpProvider());
         _providers.Add(new GitProvider());
+        _providers.Add(new HgProvider()); 
     }
 
     public async Task FetchSourceAsync(SourceEntry entry, string srcDest, Action<long?, long> onProgress)

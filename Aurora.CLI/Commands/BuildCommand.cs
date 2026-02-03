@@ -163,4 +163,5 @@ public class BuildCommand : ICommand
             
         AnsiConsole.Write(panel);
     }
+    
 }

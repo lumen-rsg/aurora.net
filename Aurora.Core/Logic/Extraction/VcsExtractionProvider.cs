@@ -35,8 +35,61 @@ public class VcsExtractionProvider : IExtractionProvider
 
             await RunGitCommandAsync($"submodule update --init --recursive", destination);
         }
+        
+        else if (entry.Protocol == "hg")
+        {
+            var destination = Path.Combine(srcDir, entry.FileName);
+            
+            if (Directory.Exists(destination)) Directory.Delete(destination, true);
+
+            onProgress($"Cloning {entry.FileName} from local cache...");
+
+            // 1. Clone from the fast local cache into the build 'src' directory
+            var absoluteCache = Path.GetFullPath(cachePath);
+            await RunHgCommandAsync($"clone \"{absoluteCache}\" \"{destination}\"");
+
+            // 2. Update to the specified revision, tag, or branch
+            string target = "default"; // Mercurial's default branch/tip
+            if (!string.IsNullOrEmpty(entry.Fragment))
+            {
+                // Parse fragments like #rev=..., #tag=...
+                target = entry.Fragment.Contains('=') ? entry.Fragment.Split('=')[1] : entry.Fragment;
+            }
+
+            onProgress($"Updating to revision '{target}'...");
+            // Use -C/--clean to ensure a pristine working copy for the build
+            await RunHgCommandAsync($"update --clean \"{target}\"", destination);
+            
+            // 3. Handle subrepositories (similar to git submodules)
+            onProgress("Updating subrepositories...");
+            await RunHgCommandAsync("subupdate --init", destination);
+        }
+        
     }
-    
+    private async Task RunHgCommandAsync(string arguments, string? workingDir = null)
+    {
+        var psi = new ProcessStartInfo {
+            FileName = "hg",
+            Arguments = arguments,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true
+        };
+
+        if (!string.IsNullOrEmpty(workingDir))
+        {
+            psi.WorkingDirectory = workingDir;
+        }
+
+        using var proc = Process.Start(psi);
+        if (proc == null) throw new Exception("Failed to start hg process.");
+
+        var err = await proc.StandardError.ReadToEndAsync();
+        await proc.WaitForExitAsync();
+
+        if (proc.ExitCode != 0) 
+            throw new Exception($"Mercurial operation failed: {err}");
+    }
     private async Task FixSubmoduleUrls(SourceEntry parentEntry, string repoPath)
     {
         var gitmodulesPath = Path.Combine(repoPath, ".gitmodules");
@@ -79,6 +132,8 @@ public class VcsExtractionProvider : IExtractionProvider
             }
         }
     }
+    
+    
 
     // FIX: Make workingDir optional (string? workingDir = null)
     private async Task RunGitCommandAsync(string arguments, string? workingDir = null)

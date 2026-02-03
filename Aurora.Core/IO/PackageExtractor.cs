@@ -55,17 +55,20 @@ public static class PackageExtractor
             var name = entry.Name.Replace('\\', '/');
             if (name.StartsWith("./")) name = name.Substring(2);
 
-            if (name == "aurora.meta" || name == ".AURORA_META")
+            // CHANGED: Look for .PKGINFO instead of aurora.meta
+            if (name == ".PKGINFO")
             {
                 using var stream = entry.DataStream;
                 if (stream == null) throw new InvalidDataException("Manifest is empty");
 
                 using var reader = new StreamReader(stream);
                 var content = reader.ReadToEnd();
-                return PackageParser.ParseManifest(content);
+                
+                // CHANGED: Call the new parser method
+                return PackageParser.ParsePkgInfo(content);
             }
         }
-        throw new InvalidDataException("Manifest not found via .NET reader");
+        throw new InvalidDataException("Invalid package: .PKGINFO not found");
     }
 
     private static List<string> GetFileListInternal(string packagePath)
@@ -80,11 +83,8 @@ public static class PackageExtractor
             var name = entry.Name.Replace('\\', '/');
             if (name.StartsWith("./")) name = name.Substring(2);
 
-            var fileName = Path.GetFileName(name);
-            if (string.IsNullOrEmpty(fileName) || 
-                name.Contains(".AURORA_") || 
-                name == "aurora.meta" || 
-                name == ".INSTALL")
+            // Filter metadata
+            if (name == ".PKGINFO" || name == ".INSTALL" || name == ".MTREE" || name.EndsWith("/"))
                 continue;
 
             files.Add("/" + name.TrimStart('/'));
@@ -96,13 +96,11 @@ public static class PackageExtractor
 
     private static Package ReadManifestViaTar(string packagePath)
     {
-        // Command: tar -xO -f package.au aurora.meta
-        // -x: extract, -O: to stdout, -f: file
-        
+        // CHANGED: Extract .PKGINFO
         var psi = new ProcessStartInfo
         {
             FileName = "tar",
-            Arguments = $"-xO -f \"{packagePath}\" aurora.meta",
+            Arguments = $"-xO -f \"{packagePath}\" .PKGINFO",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -117,17 +115,11 @@ public static class PackageExtractor
 
         if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(content))
         {
-            // Try legacy name
-            psi.Arguments = $"-xO -f \"{packagePath}\" .AURORA_META";
-            using var legacyProc = Process.Start(psi);
-            content = legacyProc?.StandardOutput.ReadToEnd() ?? "";
-            legacyProc?.WaitForExit();
-            
-            if (string.IsNullOrWhiteSpace(content))
-                throw new Exception($"Failed to extract manifest from {Path.GetFileName(packagePath)} using system tar.");
+            throw new Exception($"Failed to extract .PKGINFO from {Path.GetFileName(packagePath)} using system tar.");
         }
 
-        return PackageParser.ParseManifest(content);
+        // CHANGED: Call the new parser method
+        return PackageParser.ParsePkgInfo(content);
     }
 
     private static List<string> GetFileListViaTar(string packagePath)
@@ -159,8 +151,9 @@ public static class PackageExtractor
             // Filter metadata and directories ending in /
             if (string.IsNullOrEmpty(fileName) || 
                 name.EndsWith("/") ||
-                name.Contains(".AURORA_") || 
-                name == "aurora.meta" || 
+                name.Contains(".MTREE") || 
+                name == ".PKGINFO" || 
+                name == ".SRCINFO" || 
                 name == ".INSTALL")
                 continue;
 
