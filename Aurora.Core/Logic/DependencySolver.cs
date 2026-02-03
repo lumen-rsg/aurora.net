@@ -6,28 +6,35 @@ public class DependencySolver
 {
     private readonly Dictionary<string, Package> _repository;
     private readonly HashSet<string> _installed;
-    private readonly Dictionary<string, List<Package>> _providesMap;
+    
+    // Map: VirtualName -> List of (Package that provides it, Version it provides)
+    private readonly Dictionary<string, List<(Package Pkg, string? ProvidedVersion)>> _providesMap;
 
     public DependencySolver(List<Package> repoPackages, List<Package> installedPackages)
     {
         _installed = installedPackages.Select(p => p.Name).ToHashSet();
         _repository = new Dictionary<string, Package>();
-        _providesMap = new Dictionary<string, List<Package>>();
+        _providesMap = new Dictionary<string, List<(Package, string?)>>();
 
-        // 1. Deduplicate and pick LATEST versions
         foreach (var pkg in repoPackages)
         {
+            // 1. Standard Package Indexing
             if (!_repository.TryGetValue(pkg.Name, out var existing) || 
                 VersionComparer.IsNewer(existing.Version, pkg.Version))
             {
                 _repository[pkg.Name] = pkg;
             }
 
-            // 2. Build the Provides Map (for sonames like libacl.so)
-            foreach (var prov in pkg.Provides)
+            // 2. Virtual Provides Indexing
+            foreach (var provStr in pkg.Provides)
             {
-                if (!_providesMap.ContainsKey(prov)) _providesMap[prov] = new List<Package>();
-                _providesMap[prov].Add(pkg);
+                // Parse "libreadline.so=8-64"
+                var prov = new DependencyRequest(provStr); 
+                
+                if (!_providesMap.ContainsKey(prov.Name)) 
+                    _providesMap[prov.Name] = new List<(Package, string?)>();
+                
+                _providesMap[prov.Name].Add((pkg, prov.Version));
             }
         }
     }
@@ -44,10 +51,8 @@ public class DependencySolver
 
     private void Visit(string rawRequest, HashSet<string> visited, HashSet<string> stack, List<Package> plan)
     {
-        // 1. Parse the request (e.g., "linux-api-headers>=4.10")
         var request = new DependencyRequest(rawRequest);
 
-        // Check if already satisfied by installed packages or planned packages
         if (_installed.Contains(request.Name) || visited.Contains(request.Name)) return;
 
         if (stack.Contains(request.Name))
@@ -55,40 +60,60 @@ public class DependencySolver
 
         stack.Add(request.Name);
 
-        // 2. Find Candidate
-        Package? candidate = null;
+        Package? selectedProvider = null;
 
-        // Try direct name match
+        // --- SEARCH LOGIC ---
+
+        // 1. Check if a real package matches the name
         if (_repository.TryGetValue(request.Name, out var pkg))
         {
-            candidate = pkg;
-        }
-        // Try virtual provides (sonames)
-        else if (_providesMap.TryGetValue(request.Name, out var providers))
-        {
-            candidate = providers.First();
+            if (request.IsSatisfiedBy(pkg))
+            {
+                selectedProvider = pkg;
+            }
         }
 
-        if (candidate == null)
+        // 2. Check if any package provides this name/version
+        if (selectedProvider == null && _providesMap.TryGetValue(request.Name, out var providers))
+        {
+            foreach (var entry in providers)
+            {
+                // If the request has a version (e.g. =8-64), we MUST check 
+                // the version provided by the package, NOT the package's own version.
+                if (request.Operator != null)
+                {
+                    // Create a dummy package object to reuse the IsSatisfiedBy logic
+                    // and check the provided version
+                    var virtualPkg = new Package { Version = entry.ProvidedVersion ?? "" };
+                    if (request.IsSatisfiedBy(virtualPkg))
+                    {
+                        selectedProvider = entry.Pkg;
+                        break;
+                    }
+                }
+                else
+                {
+                    // No version requested, any provider will do
+                    selectedProvider = entry.Pkg;
+                    break;
+                }
+            }
+        }
+
+        if (selectedProvider == null)
             throw new Exception($"Target not found: {rawRequest}");
 
-        // 3. Validate Version Constraint
-        if (!request.IsSatisfiedBy(candidate))
+        // 3. Resolve child dependencies
+        if (!visited.Contains(selectedProvider.Name))
         {
-            throw new Exception($"Version mismatch for {request.Name}. " +
-                                $"Requested: {request.Operator}{request.Version}, " +
-                                $"Available: {candidate.Version}");
-        }
-
-        // 4. Recurse
-        visited.Add(candidate.Name);
-
-        foreach (var dep in candidate.Depends)
-        {
-            Visit(dep, visited, stack, plan);
+            visited.Add(selectedProvider.Name);
+            foreach (var dep in selectedProvider.Depends)
+            {
+                Visit(dep, visited, stack, plan);
+            }
+            plan.Add(selectedProvider);
         }
 
         stack.Remove(request.Name);
-        plan.Add(candidate);
     }
 }
