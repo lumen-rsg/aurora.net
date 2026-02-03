@@ -195,34 +195,34 @@ public class ArchBuildProvider : IBuildProvider
     
     private void ConfigureBuildEnvironment(ProcessStartInfo psi, MakepkgConfig c, AuroraManifest m, string srcDir, string buildDir, string startDir)
     {
-        // DO NOT CLEAR ENVIRONMENT - Tools like m4 require existing system env vars
+        psi.Environment["PATH"] = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
+        if (m.Build.Options.Contains("ccache")) psi.Environment["PATH"] = "/usr/lib/ccache/bin:" + psi.Environment["PATH"];
         
-        var path = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
-        if (m.Build.Options.Contains("ccache")) path = "/usr/lib/ccache/bin:" + path;
-        
-        psi.Environment["PATH"] = path;
         psi.Environment["SHELL"] = "/bin/bash";
         psi.Environment["LC_ALL"] = "C";
         psi.Environment["LANG"] = "C";
         psi.Environment["HOME"] = buildDir;
         psi.Environment["srcdir"] = srcDir;
         psi.Environment["startdir"] = startDir;
-        
-        // Ensure pkgdir is set to the default main package dir for build/prepare phase
         psi.Environment["pkgdir"] = Path.Combine(buildDir, "pkg", m.Package.Name);
-
         psi.Environment["CARCH"] = c.Arch;
         psi.Environment["CHOST"] = c.Chost;
-        
-        // --- SMART FLAG WRAPPER: Avoid Redefinition Errors ---
-        // We use the -U flag to undefine _FORTIFY_SOURCE before setting it to our system standard.
-        // This prevents the "redefined" error in packages like efibootmgr.
-        var cppFlags = c.CppFlags.Replace("-D_FORTIFY_SOURCE=", "-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=");
-        var cFlags = c.CFlags.Replace("-D_FORTIFY_SOURCE=", "-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=");
 
-        psi.Environment["CFLAGS"] = cFlags;
-        psi.Environment["CXXFLAGS"] = c.CxxFlags.Replace("-D_FORTIFY_SOURCE=", "-Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=");
-        psi.Environment["CPPFLAGS"] = cppFlags;
+        // HELPER: Sanitize flags and inject undefine for hardening macros to prevent efibootmgr errors
+        string Sanitize(string val)
+        {
+            if (string.IsNullOrEmpty(val)) return val;
+            // Remove -Wp, prefixes entirely - modern compilers don't need them for -D/-U 
+            // and keeping them leads to nested -Wp,-Wp errors.
+            var clean = val.Replace("-Wp,", "");
+            if (clean.Contains("_FORTIFY_SOURCE"))
+                return $"-U_FORTIFY_SOURCE {clean}";
+            return clean;
+        }
+
+        psi.Environment["CFLAGS"] = Sanitize(c.CFlags);
+        psi.Environment["CXXFLAGS"] = Sanitize(c.CxxFlags);
+        psi.Environment["CPPFLAGS"] = Sanitize(c.CppFlags);
         psi.Environment["LDFLAGS"] = c.LdFlags;
         psi.Environment["MAKEFLAGS"] = c.MakeFlags;
         psi.Environment["PACKAGER"] = c.Packager;
