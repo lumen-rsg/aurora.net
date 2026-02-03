@@ -60,29 +60,35 @@ public class RepoManager
 
         foreach (var repo in repos.Values.Where(r => r.Enabled))
         {
-            var repoFileName = $"{repo.Id}.aurepo";
+            // CHANGED: Use .json instead of .aurepo
+            var repoFileName = $"{repo.Id}.json"; 
             var targetFile = Path.Combine(dbDir, repoFileName);
-            var sigFile = targetFile + ".asc";
+            var sigFile = targetFile + ".sig"; // Standard sig extension
 
             onProgress(repo.Name, "Syncing...");
 
             try
             {
+                // Fetch the JSON database
                 await FetchFile(repo.Url, repoFileName, targetFile);
-                await FetchFile(repo.Url, repoFileName + ".asc", sigFile);
 
-                if (!SkipSignatureCheck && !GpgHelper.VerifySignature(targetFile, sigFile, Directory.Exists(gpgHome) ? gpgHome : null))
+                if (!SkipSignatureCheck)
                 {
-                    File.Delete(targetFile);
-                    File.Delete(sigFile);
-                    throw new Exception("Invalid GPG Signature!");
+                    // Fetch the signature
+                    await FetchFile(repo.Url, repoFileName + ".sig", sigFile);
+            
+                    if (!GpgHelper.VerifySignature(targetFile, sigFile, Directory.Exists(gpgHome) ? gpgHome : null))
+                    {
+                        File.Delete(targetFile);
+                        File.Delete(sigFile);
+                        throw new Exception("Invalid GPG Signature!");
+                    }
                 }
-                
+        
                 onProgress(repo.Name, "Done");
             }
             catch (Exception ex)
             {
-                AuLogger.Error($"Failed to sync '{repo.Name}': {ex.Message}");
                 onProgress(repo.Name, $"Failed: {ex.Message}");
             }
         }
