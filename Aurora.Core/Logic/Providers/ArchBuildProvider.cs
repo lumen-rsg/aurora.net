@@ -109,9 +109,13 @@ public class ArchBuildProvider : IBuildProvider
         var absoluteBuildDir = Path.GetFullPath(buildDir);
         var absoluteStartDir = Path.GetFullPath(startDir);
         var srcDir = Path.Combine(absoluteBuildDir, "src");
+        var pkgRootDir = Path.Combine(absoluteBuildDir, "pkg");
 
-        if (Directory.Exists(srcDir)) Directory.Delete(srcDir, true);
-        Directory.CreateDirectory(srcDir);
+        // --- ROBUST DIRECTORY PREPARATION ---
+        // Instead of deleting the directory (which causes "Access Denied" if busy),
+        // we clean the contents.
+        PrepareBuildDirectory(srcDir);
+        PrepareBuildDirectory(pkgRootDir);
         
         var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST");
 
@@ -264,6 +268,33 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("done");
 
         return sb.ToString();
+    }
+    
+    /// <summary>
+    /// Robustly cleans a directory's contents without deleting the directory itself.
+    /// Prevents "Access Denied" if the directory is used as a CWD by another process.
+    /// </summary>
+    private void PrepareBuildDirectory(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            try
+            {
+                foreach (var file in Directory.GetFiles(path)) File.Delete(file);
+                foreach (var dir in Directory.GetDirectories(path)) Directory.Delete(dir, true);
+            }
+            catch (IOException)
+            {
+                // If standard cleanup fails, fallback to a full delete-recreate
+                // but this is usually where the "Access Denied" happens.
+                Directory.Delete(path, true);
+                Directory.CreateDirectory(path);
+            }
+        }
+        else
+        {
+            Directory.CreateDirectory(path);
+        }
     }
     
     private void ConfigureBuildEnvironment(ProcessStartInfo psi, MakepkgConfig c, AuroraManifest m, string srcDir, string buildDir, string startDir)
