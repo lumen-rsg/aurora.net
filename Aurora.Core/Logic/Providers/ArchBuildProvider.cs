@@ -37,8 +37,10 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, bool skipDownload, string startDir)
     {
-        // FIX: Early return if there are no sources (Meta-packages)
-        if (manifest.Build.Source == null || manifest.Build.Source.Count == 0)
+        // Filter out any accidental empty entries
+        var validSources = manifest.Build.Source?.Where(s => !string.IsNullOrWhiteSpace(s)).ToList() ?? new();
+
+        if (validSources.Count == 0)
         {
             AnsiConsole.MarkupLine("[grey]No sources to download (Meta-package).[/]");
             return;
@@ -66,10 +68,8 @@ public class ArchBuildProvider : IBuildProvider
                 })
                 .StartAsync(async ctx => 
                 {
-                    foreach (var sourceStr in manifest.Build.Source)
+                    foreach (var sourceStr in validSources)
                     {
-                        if (string.IsNullOrWhiteSpace(sourceStr)) continue;
-
                         var entry = new SourceEntry(sourceStr);
                         var task = ctx.AddTask($"[grey]{Markup.Escape(entry.FileName)}[/]");
                         await sourceMgr.FetchSourceAsync(entry, downloadDir, (total, current) => 
@@ -89,17 +89,13 @@ public class ArchBuildProvider : IBuildProvider
                 });
         }
 
-        // Only verify if sources exist
-        if (manifest.Build.Source.Any())
-        {
-            var integrity = new IntegrityManager();
-            integrity.VerifyChecksums(manifest, downloadDir, startDir);
+        var integrity = new IntegrityManager();
+        integrity.VerifyChecksums(manifest, downloadDir, startDir);
 
-            if (!skipGpg)
-            {
-                var sigVerifier = new SignatureVerifier();
-                sigVerifier.VerifySignatures(manifest, downloadDir, startDir);
-            }
+        if (!skipGpg)
+        {
+            var sigVerifier = new SignatureVerifier();
+            sigVerifier.VerifySignatures(manifest, downloadDir, startDir);
         }
     }
 

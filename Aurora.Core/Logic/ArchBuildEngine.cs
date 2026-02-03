@@ -169,9 +169,15 @@ echo ""__END_METADATA__""
                 case "replaces": manifest.Metadata.Replaces.Add(value); break;
                 case "backup": manifest.Metadata.Backup.Add(value); break;
                 case "options": manifest.Build.Options.Add(value); break;
-                case "source": manifest.Build.Source.Add(value); break;
-                case "sha256sums": manifest.Build.Sha256Sums.Add(value); break;
-                case "noextract": manifest.Build.NoExtract.Add(value); break;
+                case "source": 
+                    if (!string.IsNullOrWhiteSpace(value)) manifest.Build.Source.Add(value); 
+                    break;
+                case "sha256sums": 
+                    if (!string.IsNullOrWhiteSpace(value)) manifest.Build.Sha256Sums.Add(value); 
+                    break;
+                case "noextract": 
+                    if (!string.IsNullOrWhiteSpace(value)) manifest.Build.NoExtract.Add(value); 
+                    break;
             }
         }
 
