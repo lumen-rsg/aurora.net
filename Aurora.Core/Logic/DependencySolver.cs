@@ -1,3 +1,7 @@
+using Aurora.Core.Models;
+
+namespace Aurora.Core.Logic;
+
 public class DependencySolver
 {
     private readonly Dictionary<string, Package> _repository;
