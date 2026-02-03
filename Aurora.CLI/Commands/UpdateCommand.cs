@@ -118,11 +118,13 @@ public class UpdateCommand : ICommand
                 return;
             }
 
-            // --- 6. Download Phase ---
+            // --- 6. Download Phase (PARALLEL) ---
             var repoMgr = new RepoManager(config.SysRoot) { SkipSignatureCheck = config.SkipGpg };
-            var packageFiles = new Dictionary<string, string>(); // Name -> LocalPath
+            var packageFiles = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+            var semaphore = new SemaphoreSlim(12);
 
             AnsiConsole.Write(new Rule("[cyan]Downloading Updates[/]").RuleStyle("grey"));
+            if (!Directory.Exists(config.CacheDir)) Directory.CreateDirectory(config.CacheDir);
             await AnsiConsole.Progress()
                 .Columns(new ProgressColumn[]
                 {
@@ -134,8 +136,10 @@ public class UpdateCommand : ICommand
                 })
                 .StartAsync(async ctx =>
                 {
-                    foreach (var (pkg, _) in updatePlan)
+                    var tasks = updatePlan.Select(async pair =>
                     {
+                        var pkg = pair.NewPkg;
+                        await semaphore.WaitAsync();
                         var task = ctx.AddTask($"[grey]{pkg.Name}[/]");
                         
                         try 
@@ -150,19 +154,17 @@ public class UpdateCommand : ICommand
                                 else task.IsIndeterminate = true;
                             });
 
-                            if (path == null) throw new FileNotFoundException($"Update for {pkg.Name} not found in mirrors.");
+                            if (path == null) throw new FileNotFoundException($"Update for {pkg.Name} not found.");
                             packageFiles[pkg.Name] = path;
-                        }
-                        catch (Exception ex)
-                        {
-                            AnsiConsole.MarkupLine($"[red]Download failed for {pkg.Name}:[/] {ex.Message}");
-                            throw; // Abort the whole update on download failure
                         }
                         finally 
                         {
                             task.StopTask();
+                            semaphore.Release();
                         }
-                    }
+                    });
+
+                    await Task.WhenAll(tasks);
                 });
 
             // --- 7. Installation Phase ---
@@ -231,6 +233,7 @@ public class UpdateCommand : ICommand
             Replaces = rPkg.Replaces,
             Checksum = rPkg.Checksum,
             InstalledSize = rPkg.InstalledSize,
+            FileName = rPkg.FileName,
             InstallReason = "explicit" // Updates maintain the existing reason usually, but new objects default to explicit
         };
     }

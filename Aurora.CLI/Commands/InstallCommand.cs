@@ -108,28 +108,54 @@ public class InstallCommand : ICommand
 
             var hookEngine = new HookEngine(config.SysRoot);
             await hookEngine.RunHooksAsync(HookWhen.PreTransaction, plan, TriggerOperation.Install);
-
-            // --- 5. Download Phase ---
-            var packageFiles = new Dictionary<string, string>();
+            
+            // --- 5. Download Phase (PARALLEL) ---
+            var packageFiles = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
             if (isLocalFile && targetPkg != null && localFilePath != null)
                 packageFiles[targetPkg.Name] = localFilePath;
+            
+            var semaphore = new SemaphoreSlim(12); 
 
+            AnsiConsole.Write(new Rule("[cyan]Downloading Assets[/]").RuleStyle("grey"));
+            if (!Directory.Exists(config.CacheDir)) Directory.CreateDirectory(config.CacheDir);
             await AnsiConsole.Progress()
-                .Columns(new ProgressColumn[] { new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new DownloadedColumn(), new SpinnerColumn() })
+                .Columns(new ProgressColumn[] 
+                { 
+                    new TaskDescriptionColumn(), 
+                    new ProgressBarColumn(), 
+                    new PercentageColumn(), 
+                    new DownloadedColumn(), 
+                    new SpinnerColumn() 
+                })
                 .StartAsync(async ctx =>
                 {
-                    foreach (var pkg in plan)
+                    var tasks = plan.Where(p => !packageFiles.ContainsKey(p.Name)).Select(async pkg =>
                     {
-                        if (packageFiles.ContainsKey(pkg.Name)) continue;
-                        var task = ctx.AddTask($"[grey]Downloading {pkg.Name}...[/]");
-                        var path = await repoMgr.DownloadPackageAsync(pkg, config.CacheDir, (total, current) => {
-                            if (total.HasValue) { task.MaxValue = total.Value; task.Value = current; }
-                            else task.IsIndeterminate = true;
-                        });
-                        if (path == null) throw new FileNotFoundException($"Package {pkg.Name} not found.");
-                        packageFiles[pkg.Name] = path;
-                        task.StopTask();
-                    }
+                        await semaphore.WaitAsync();
+                        var task = ctx.AddTask($"[grey]{pkg.Name}[/]");
+                        try 
+                        {
+                            var path = await repoMgr.DownloadPackageAsync(pkg, config.CacheDir, (total, current) => 
+                            {
+                                if (total.HasValue)
+                                {
+                                    task.MaxValue = total.Value;
+                                    task.Value = current;
+                                }
+                                else task.IsIndeterminate = true;
+                            });
+
+                            if (path == null) throw new FileNotFoundException($"Package {pkg.Name} not found.");
+                            packageFiles[pkg.Name] = path;
+                        }
+                        finally 
+                        {
+                            task.StopTask();
+                            semaphore.Release();
+                        }
+                    });
+
+                    await Task.WhenAll(tasks);
                 });
 
             // --- 6. Install Phase ---
@@ -183,7 +209,8 @@ public class InstallCommand : ICommand
             Replaces = rPkg.Replaces,
             Checksum = rPkg.Checksum,
             InstalledSize = rPkg.InstalledSize,
-            InstallReason = "explicit"
+            InstallReason = "explicit",
+            FileName = rPkg.FileName
         };
     }
 

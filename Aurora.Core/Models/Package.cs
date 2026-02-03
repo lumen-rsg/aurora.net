@@ -22,6 +22,7 @@ public class Package
     public List<string> Replaces { get; set; } = new();
     public List<string> Provides { get; set; } = new();
     public List<string> Backup { get; set; } = new(); // NEW: Config files to backup
+    public string FileName { get; set; } = string.Empty;
 
     // Security
     public string? Checksum { get; set; }
