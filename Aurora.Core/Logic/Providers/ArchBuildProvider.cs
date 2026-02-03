@@ -110,12 +110,9 @@ public class ArchBuildProvider : IBuildProvider
         var absoluteStartDir = Path.GetFullPath(startDir);
         var srcDir = Path.Combine(absoluteBuildDir, "src");
         var pkgRootDir = Path.Combine(absoluteBuildDir, "pkg");
-
-        // --- ROBUST DIRECTORY PREPARATION ---
-        // Instead of deleting the directory (which causes "Access Denied" if busy),
-        // we clean the contents.
-        PrepareBuildDirectory(srcDir);
-        PrepareBuildDirectory(pkgRootDir);
+        
+        await SafePrepareDirectory(srcDir);
+        await SafePrepareDirectory(pkgRootDir);
         
         var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST");
 
@@ -271,28 +268,55 @@ public class ArchBuildProvider : IBuildProvider
     }
     
     /// <summary>
-    /// Robustly cleans a directory's contents without deleting the directory itself.
-    /// Prevents "Access Denied" if the directory is used as a CWD by another process.
+    /// Attempts to clean a directory by moving it to a temporary name and then deleting it.
+    /// This bypasses "Access Denied" errors caused by transient filesystem locks on Linux.
     /// </summary>
-    private void PrepareBuildDirectory(string path)
+    private async Task SafePrepareDirectory(string path)
     {
-        if (Directory.Exists(path))
+        if (!Directory.Exists(path))
+        {
+            Directory.CreateDirectory(path);
+            return;
+        }
+
+        // Try up to 5 times with a backoff
+        for (int i = 0; i < 5; i++)
         {
             try
             {
-                foreach (var file in Directory.GetFiles(path)) File.Delete(file);
-                foreach (var dir in Directory.GetDirectories(path)) Directory.Delete(dir, true);
+                // 1. Generate a random temporary name in the same parent folder
+                string tempPath = path + ".old." + Guid.NewGuid().ToString("N");
+                
+                // 2. Move the busy directory to the temp name
+                // (Linux allows moving a directory even if processes are inside it)
+                Directory.Move(path, tempPath);
+                
+                // 3. Create a fresh directory for the new build immediately
+                Directory.CreateDirectory(path);
+
+                // 4. Fire-and-forget the deletion of the old directory
+                _ = Task.Run(() => {
+                    try { Directory.Delete(tempPath, true); } catch { /* Ignore background cleanup errors */ }
+                });
+
+                return;
             }
             catch (IOException)
             {
-                // If standard cleanup fails, fallback to a full delete-recreate
-                // but this is usually where the "Access Denied" happens.
-                Directory.Delete(path, true);
-                Directory.CreateDirectory(path);
+                // If it's a metapackage, the filesystem might be extremely busy. 
+                // Wait 100ms and try again.
+                await Task.Delay(100);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                await Task.Delay(100);
             }
         }
-        else
+
+        // Final fallback: just try a standard delete
+        if (Directory.Exists(path))
         {
+            Directory.Delete(path, true);
             Directory.CreateDirectory(path);
         }
     }
