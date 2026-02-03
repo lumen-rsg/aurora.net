@@ -49,4 +49,30 @@ public class DependencyRequest
             _    => true
         };
     }
+    
+    // Add this method to DependencyRequest class
+    public bool Satisfies(DependencyRequest other)
+    {
+        // If names don't match, they don't satisfy
+        if (Name != other.Name) return false;
+
+        // If the other (the dependency) doesn't care about version, we are good
+        if (other.Operator == null || other.Version == null) return true;
+
+        // If we (the provision) don't have a version, but they require one, we usually fail
+        if (Version == null) return false;
+
+        // Compare our version against their constraint
+        int cmp = VersionComparer.Compare(Version, other.Version);
+
+        return other.Operator switch
+        {
+            ">=" => cmp >= 0,
+            "<=" => cmp <= 0,
+            "="  => cmp == 0,
+            ">"  => cmp > 0,
+            "<"  => cmp < 0,
+            _    => true
+        };
+    }
 }

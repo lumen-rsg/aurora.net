@@ -1,40 +1,35 @@
-using Aurora.Core.Models;
-
-namespace Aurora.Core.Logic;
-
 public class DependencySolver
 {
     private readonly Dictionary<string, Package> _repository;
     private readonly HashSet<string> _installed;
     
-    // Map: VirtualName -> List of (Package that provides it, Version it provides)
-    private readonly Dictionary<string, List<(Package Pkg, string? ProvidedVersion)>> _providesMap;
+    // Key: Capability Name (e.g. "libreadline.so")
+    // Value: List of tuples containing the Package and the specific Provision info
+    private readonly Dictionary<string, List<(Package Pkg, DependencyRequest Provision)>> _providesMap;
 
     public DependencySolver(List<Package> repoPackages, List<Package> installedPackages)
     {
         _installed = installedPackages.Select(p => p.Name).ToHashSet();
         _repository = new Dictionary<string, Package>();
-        _providesMap = new Dictionary<string, List<(Package, string?)>>();
+        _providesMap = new Dictionary<string, List<(Package, DependencyRequest)>>();
 
         foreach (var pkg in repoPackages)
         {
-            // 1. Standard Package Indexing
+            // 1. Store Package (pick latest)
             if (!_repository.TryGetValue(pkg.Name, out var existing) || 
                 VersionComparer.IsNewer(existing.Version, pkg.Version))
             {
                 _repository[pkg.Name] = pkg;
             }
 
-            // 2. Virtual Provides Indexing
+            // 2. Map Provisions
             foreach (var provStr in pkg.Provides)
             {
-                // Parse "libreadline.so=8-64"
-                var prov = new DependencyRequest(provStr); 
-                
+                var prov = new DependencyRequest(provStr);
                 if (!_providesMap.ContainsKey(prov.Name)) 
-                    _providesMap[prov.Name] = new List<(Package, string?)>();
+                    _providesMap[prov.Name] = new List<(Package, DependencyRequest)>();
                 
-                _providesMap[prov.Name].Add((pkg, prov.Version));
+                _providesMap[prov.Name].Add((pkg, prov));
             }
         }
     }
@@ -43,9 +38,8 @@ public class DependencySolver
     {
         var plan = new List<Package>();
         var visited = new HashSet<string>();
-        var recursionStack = new HashSet<string>();
-
-        Visit(targetName, visited, recursionStack, plan);
+        var stack = new HashSet<string>();
+        Visit(targetName, visited, stack, plan);
         return plan;
     }
 
@@ -54,66 +48,51 @@ public class DependencySolver
         var request = new DependencyRequest(rawRequest);
 
         if (_installed.Contains(request.Name) || visited.Contains(request.Name)) return;
-
-        if (stack.Contains(request.Name))
-            throw new Exception($"Circular dependency detected: {request.Name}");
+        if (stack.Contains(request.Name)) throw new Exception($"Circular dependency: {request.Name}");
 
         stack.Add(request.Name);
 
-        Package? selectedProvider = null;
+        Package? candidate = null;
 
-        // --- SEARCH LOGIC ---
-
-        // 1. Check if a real package matches the name
+        // 1. Try Name Match
         if (_repository.TryGetValue(request.Name, out var pkg))
         {
+            // Check if the PACKAGE version satisfies the request
             if (request.IsSatisfiedBy(pkg))
             {
-                selectedProvider = pkg;
+                candidate = pkg;
             }
         }
 
-        // 2. Check if any package provides this name/version
-        if (selectedProvider == null && _providesMap.TryGetValue(request.Name, out var providers))
+        // 2. Try Provides Match (if name match failed or version didn't satisfy)
+        if (candidate == null && _providesMap.TryGetValue(request.Name, out var providers))
         {
-            foreach (var entry in providers)
+            // Find a provider whose specific Provision version satisfies the request
+            var match = providers.FirstOrDefault(p => p.Provision.Satisfies(request));
+            if (match.Pkg != null)
             {
-                // If the request has a version (e.g. =8-64), we MUST check 
-                // the version provided by the package, NOT the package's own version.
-                if (request.Operator != null)
-                {
-                    // Create a dummy package object to reuse the IsSatisfiedBy logic
-                    // and check the provided version
-                    var virtualPkg = new Package { Version = entry.ProvidedVersion ?? "" };
-                    if (request.IsSatisfiedBy(virtualPkg))
-                    {
-                        selectedProvider = entry.Pkg;
-                        break;
-                    }
-                }
-                else
-                {
-                    // No version requested, any provider will do
-                    selectedProvider = entry.Pkg;
-                    break;
-                }
+                candidate = match.Pkg;
             }
         }
 
-        if (selectedProvider == null)
-            throw new Exception($"Target not found: {rawRequest}");
+        if (candidate == null)
+            throw new Exception($"Target not found or version mismatch: {rawRequest}");
 
-        // 3. Resolve child dependencies
-        if (!visited.Contains(selectedProvider.Name))
+        // If the candidate we found is already visited/installed under its real name, stop.
+        if (visited.Contains(candidate.Name) || _installed.Contains(candidate.Name))
         {
-            visited.Add(selectedProvider.Name);
-            foreach (var dep in selectedProvider.Depends)
-            {
-                Visit(dep, visited, stack, plan);
-            }
-            plan.Add(selectedProvider);
+            stack.Remove(request.Name);
+            return;
+        }
+
+        visited.Add(candidate.Name);
+
+        foreach (var dep in candidate.Depends)
+        {
+            Visit(dep, visited, stack, plan);
         }
 
         stack.Remove(request.Name);
+        plan.Add(candidate);
     }
 }
