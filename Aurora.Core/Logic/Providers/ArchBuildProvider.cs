@@ -26,7 +26,6 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task<AuroraManifest> GetManifestAsync(string directory)
     {
-        // This uses the robust prober to extract initial metadata
         var engine = new ArchBuildEngine(directory);
         var pkgbuildPath = Path.Combine(directory, "PKGBUILD");
         
@@ -38,6 +37,7 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, bool skipDownload, string startDir)
     {
+        // This method remains unchanged
         if (!Directory.Exists(downloadDir)) Directory.CreateDirectory(downloadDir);
 
         if (skipDownload)
@@ -64,7 +64,6 @@ public class ArchBuildProvider : IBuildProvider
                     {
                         var entry = new SourceEntry(sourceStr);
                         var task = ctx.AddTask($"[grey]{Markup.Escape(entry.FileName)}[/]");
-
                         await sourceMgr.FetchSourceAsync(entry, downloadDir, (total, current) => 
                         {
                             if (total.HasValue && total.Value > 0)
@@ -77,7 +76,6 @@ public class ArchBuildProvider : IBuildProvider
                                 task.IsIndeterminate = true;
                             }
                         });
-                        
                         task.StopTask();
                     }
                 });
@@ -95,29 +93,27 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task BuildAsync(AuroraManifest manifest, string buildDir, string startDir, Action<string> logAction)
     {
-        // 1. Setup
+        // Setup logic remains the same
         var sysConfig = await MakepkgConfigLoader.LoadAsync();
         var absoluteBuildDir = Path.GetFullPath(buildDir);
         var absoluteStartDir = Path.GetFullPath(startDir);
         var srcDir = Path.Combine(absoluteBuildDir, "src");
 
-        // Cleanup and prepare sandbox
         if (Directory.Exists(srcDir)) Directory.Delete(srcDir, true);
         Directory.CreateDirectory(srcDir);
         
         var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST");
 
-        // 2. Source Extraction
         var extractor = new SourceExtractor();
         await extractor.ExtractAllAsync(manifest, cacheDir, srcDir, absoluteStartDir);
 
-        // 3. Generate the Monolithic Build Script
+        // Generate the monolithic script with the subshell fix
         var scriptPath = Path.Combine(absoluteBuildDir, "aurora_build_script.sh");
         var scriptContent = GenerateMonolithicScript(manifest, sysConfig, srcDir, absoluteBuildDir, startDir);
         await File.WriteAllTextAsync(scriptPath, scriptContent);
         File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
-        // 4. Execute the Script
+        // Execution logic remains the same
         var psi = new ProcessStartInfo
         {
             FileName = "/bin/bash",
@@ -126,7 +122,7 @@ public class ArchBuildProvider : IBuildProvider
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            WorkingDirectory = srcDir // Start in the source directory
+            WorkingDirectory = srcDir 
         };
         
         ConfigureBuildEnvironment(psi, sysConfig, srcDir, absoluteBuildDir, startDir);
@@ -137,7 +133,6 @@ public class ArchBuildProvider : IBuildProvider
         using var process = Process.Start(fakerootPsi);
         if (process == null) throw new Exception("Failed to start monolithic build process.");
 
-        // 5. Real-time Log Parsing and Artifact Creation
         var subManifests = new Dictionary<string, AuroraManifest>();
         string? currentPkgName = null;
         var currentMetadata = new StringBuilder();
@@ -164,10 +159,8 @@ public class ArchBuildProvider : IBuildProvider
                 capturingMetadata = false;
                 var baseManifest = CloneManifest(manifest);
                 baseManifest.Package.Name = currentPkgName;
-                
                 var overrides = PkgInfoParser.Parse(currentMetadata.ToString());
                 ApplyOverrides(baseManifest, overrides);
-                
                 subManifests[currentPkgName] = baseManifest;
             }
             else if (capturingMetadata)
@@ -188,7 +181,6 @@ public class ArchBuildProvider : IBuildProvider
             throw new Exception($"Build script failed with exit code {process.ExitCode}. See log for details.");
         }
 
-        // 6. Final Artifact Creation
         AnsiConsole.MarkupLine("\n[bold magenta]Finalizing Artifacts...[/]");
         foreach (var (pkgName, subManifest) in subManifests)
         {
@@ -211,9 +203,10 @@ public class ArchBuildProvider : IBuildProvider
 
         sb.AppendLine($"source '{Path.Combine(startDir, "PKGBUILD")}'");
 
-        sb.AppendLine("run_prepare() { if type -t prepare &>/dev/null; then msg \"Running prepare()...\" && prepare; fi; }");
-        sb.AppendLine("run_build() { if type -t build &>/dev/null; then msg \"Running build()...\" && build; fi; }");
-        sb.AppendLine("run_check() { if type -t check &>/dev/null; then msg \"Running check()...\" && check; fi; }");
+        // --- THE FIX: Wrap function calls in subshells `( ... )` ---
+        sb.AppendLine("run_prepare() { if type -t prepare &>/dev/null; then msg \"Running prepare()...\" && ( prepare ); fi; }");
+        sb.AppendLine("run_build() { if type -t build &>/dev/null; then msg \"Running build()...\" && ( build ); fi; }");
+        sb.AppendLine("run_check() { if type -t check &>/dev/null; then msg \"Running check()...\" && ( check ); fi; }");
         
         sb.AppendLine("scrape_metadata() {");
         sb.AppendLine("  echo '---AURORA_METADATA_START---'");
@@ -224,7 +217,7 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("  done; echo '---AURORA_METADATA_END---';");
         sb.AppendLine("}");
 
-        sb.AppendLine("cd \"$srcdir\"");
+        sb.AppendLine("cd \"$srcdir\""); // Set the main working directory once
         sb.AppendLine("run_prepare");
         sb.AppendLine("run_build");
         
@@ -247,8 +240,9 @@ public class ArchBuildProvider : IBuildProvider
         
         sb.AppendLine("  package_func=\"package_$pkgname\"");
         sb.AppendLine("  if ! type -t \"$package_func\" &>/dev/null; then package_func=\"package\"; fi");
-        sb.AppendLine("  cd \"$srcdir\"");
-        sb.AppendLine("  \"$package_func\"");
+        
+        // --- THE FIX: Also wrap the package function in a subshell ---
+        sb.AppendLine("  ( \"$package_func\" )");
         
         sb.AppendLine("  scrape_metadata");
         sb.AppendLine("done");
@@ -277,7 +271,6 @@ public class ArchBuildProvider : IBuildProvider
     private void ApplyOverrides(AuroraManifest target, AuroraManifest source)
     {
         if (!string.IsNullOrEmpty(source.Package.Description)) target.Package.Description = source.Package.Description;
-
         if (source.Metadata.License.Any()) target.Metadata.License = source.Metadata.License;
         if (source.Metadata.Provides.Any()) target.Metadata.Provides = source.Metadata.Provides;
         if (source.Metadata.Conflicts.Any()) target.Metadata.Conflicts = source.Metadata.Conflicts;
