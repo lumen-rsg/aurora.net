@@ -24,7 +24,9 @@ class Program
             switch (command)
             {
                 case "generate":
-                    GenerateRepo(targetDir);
+
+                    string name = args.Length > 2 ? args[2] : Path.GetFileName(targetDir.TrimEnd(Path.DirectorySeparatorChar));
+                    GenerateRepo(targetDir, name);
                     break;
                 case "init":
                     InitRepo(targetDir);
@@ -47,11 +49,14 @@ class Program
         AnsiConsole.MarkupLine("[grey]Place your .au files here and run 'au-repotool generate <dir>'[/]");
     }
 
-    static void GenerateRepo(string repoDir)
+    static void GenerateRepo(string repoDir, string repoName)
+    
     {
         if (!Directory.Exists(repoDir)) throw new DirectoryNotFoundException(repoDir);
 
-        var repoFile = Path.Combine(repoDir, "local.aurepo");
+        // Use the repoName for the file
+        var repoFileName = $"{repoName}.aurepo";
+        var repoFile = Path.Combine(repoDir, repoFileName);
         var packages = new List<Package>();
 
         // 1. Scan for .au files

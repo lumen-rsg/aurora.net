@@ -74,18 +74,24 @@ public class RepoManager
 
     private async Task FetchFile(string baseUrl, string filename, string destination)
     {
-        var fullUrl = baseUrl.TrimEnd('/') + '/' + filename;
+        // Use Uri constructor to handle slashes correctly
+        // Base: https://packages.lumina.1t.ru/core/
+        // File: core.aurepo
+        var baseUri = new Uri(baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/");
+        var fullUri = new Uri(baseUri, filename);
 
-        if (fullUrl.StartsWith("file://"))
+        if (fullUri.Scheme == "file")
         {
-            var sourcePath = new Uri(fullUrl).LocalPath;
+            var sourcePath = fullUri.LocalPath;
             if (!File.Exists(sourcePath)) throw new FileNotFoundException($"Remote file not found: {sourcePath}");
             File.Copy(sourcePath, destination, overwrite: true);
         }
         else
         {
-            var data = await _client.GetByteArrayAsync(fullUrl);
-            await File.WriteAllBytesAsync(destination, data);
+            // Use GetStreamAsync for better memory handling of large repo files
+            using var response = await _client.GetStreamAsync(fullUri);
+            using var fs = new FileStream(destination, FileMode.Create);
+            await response.CopyToAsync(fs);
         }
     }
 
