@@ -37,7 +37,6 @@ public class ArchBuildProvider : IBuildProvider
 
     public async Task FetchSourcesAsync(AuroraManifest manifest, string downloadDir, bool skipGpg, bool skipDownload, string startDir)
     {
-        // Filter out any accidental empty entries
         var validSources = manifest.Build.Source?.Where(s => !string.IsNullOrWhiteSpace(s)).ToList() ?? new();
 
         if (validSources.Count == 0)
@@ -108,7 +107,7 @@ public class ArchBuildProvider : IBuildProvider
 
         if (Directory.Exists(srcDir)) Directory.Delete(srcDir, true);
         Directory.CreateDirectory(srcDir);
-    
+        
         var cacheDir = Path.Combine(absoluteStartDir, "SRCDEST");
 
         var validSources = manifest.Build.Source?.Where(s => !string.IsNullOrWhiteSpace(s)).ToList() ?? new();
@@ -118,7 +117,6 @@ public class ArchBuildProvider : IBuildProvider
             await extractor.ExtractAllAsync(manifest, cacheDir, srcDir, absoluteStartDir);
         }
 
-        // Determine fakeroot availability
         bool useFakeroot = FakerootHelper.IsAvailable();
 
         var scriptPath = Path.Combine(absoluteBuildDir, "aurora_build_script.sh");
@@ -136,13 +134,11 @@ public class ArchBuildProvider : IBuildProvider
             CreateNoWindow = true,
             WorkingDirectory = srcDir 
         };
-    
+        
         ConfigureBuildEnvironment(psi, sysConfig, manifest, srcDir, absoluteBuildDir, absoluteStartDir);
-    
-        // DO NOT WRAP PSI IN FAKEROOT HERE
+        
         var logFile = Path.Combine(buildDir, "build.log");
-    
-        using var process = Process.Start(psi); 
+        using var process = Process.Start(psi);
         if (process == null) throw new Exception("Failed to start monolithic build process.");
 
         var subManifests = new Dictionary<string, AuroraManifest>();
@@ -203,133 +199,74 @@ public class ArchBuildProvider : IBuildProvider
         AnsiConsole.MarkupLine("\n[green bold]✔ Build process completed successfully![/]");
     }
 
-   private string GenerateMonolithicScript(AuroraManifest m, MakepkgConfig c, string srcDir, string buildDir, string startDir, bool useFakeroot)
-{
-    var sb = new StringBuilder();
-    sb.AppendLine("#!/bin/bash");
-    sb.AppendLine("set -e");
-    sb.AppendLine("shopt -s nullglob globstar");
-
-    // Standard helpers
-    sb.AppendLine("msg() { echo \"==> $1\"; }; msg2() { echo \"  -> $1\"; };");
-    sb.AppendLine("warning() { echo \"==> WARNING: $1\" >&2; }; error() { echo \"==> ERROR: $1\" >&2; exit 1; }");
-
-    sb.AppendLine($"source '{Path.Combine(startDir, "PKGBUILD")}'");
-
-    // Lifecycle functions (Regular User)
-    sb.AppendLine("run_prepare() { if type -t prepare &>/dev/null; then msg \"Running prepare()...\" && ( prepare ); fi; }");
-    sb.AppendLine("run_build() { if type -t build &>/dev/null; then msg \"Running build()...\" && ( build ); fi; }");
-    sb.AppendLine("run_check() { if type -t check &>/dev/null; then msg \"Running check()...\" && ( check ); fi; }");
-    
-    // Metadata scraper
-    sb.AppendLine("scrape_metadata() {");
-    sb.AppendLine("  echo '---AURORA_METADATA_START---'");
-    sb.AppendLine("  printf 'pkgdesc = %s\\n' \"${pkgdesc:-}\"");
-    sb.AppendLine("  local arr; for arr in license provides conflict replaces depend optdepend; do");
-    sb.AppendLine("    local -n ref=\"$arr\" 2>/dev/null || continue;");
-    sb.AppendLine("    for item in \"${ref[@]}\"; do [[ -n \"$item\" ]] && printf '%s = %s\\n' \"$arr\" \"$item\"; done;");
-    sb.AppendLine("  done; echo '---AURORA_METADATA_END---';");
-    sb.AppendLine("}");
-
-    // Execution: User Space
-    sb.AppendLine("cd \"$srcdir\"");
-    sb.AppendLine("run_prepare");
-    sb.AppendLine("run_build");
-    if (m.Build.Options.Contains("check")) sb.AppendLine("run_check");
-
-    // Execution: Fakeroot Space (ONLY for packaging)
-    sb.AppendLine("msg \"Entering fakeroot for packaging...\"");
-    
-    // We define a sub-script that fakeroot will execute
-    string fakerootCmd = useFakeroot ? "fakeroot --" : "";
-    
-    sb.AppendLine("for pkg_name_entry in \"${pkgname[@]}\"; do");
-    sb.AppendLine("  pkgdir_entry=\"" + buildDir + "/pkg/$pkg_name_entry\"");
-    sb.AppendLine("  rm -rf \"$pkgdir_entry\"");
-    sb.AppendLine("  mkdir -p \"$pkgdir_entry\"");
-    
-    sb.AppendLine("  msg \"Packaging $pkg_name_entry...\"");
-    sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$pkg_name_entry\"");
-    
-    // We wrap the package function call in fakeroot
-    // We must re-source the PKGBUILD inside the fakeroot subshell to restore functions
-    sb.AppendLine($"  {fakerootCmd} bash -c \"source '{Path.Combine(startDir, "PKGBUILD")}'; " +
-                  "export pkgname='$pkg_name_entry'; " +
-                  "export pkgdir='$pkgdir_entry'; " +
-                  "export srcdir='$srcdir'; " +
-                  "export startdir='" + startDir + "'; " +
-                  "package_func='package_$pkg_name_entry'; " +
-                  "if ! type -t \\\"$package_func\\\" &>/dev/null; then package_func='package'; fi; " +
-                  "cd \\\"$srcdir\\\"; \\\"$package_func\\\";\"");
-    
-    // Metadata is scraped after fakeroot exits
-    sb.AppendLine("  export pkgname=\"$pkg_name_entry\"");
-    sb.AppendLine("  export pkgdir=\"$pkgdir_entry\"");
-    sb.AppendLine("  scrape_metadata");
-    sb.AppendLine("done");
-
-    return sb.ToString();
-}
-    
-    /// <summary>
-    /// Attempts to clean a directory by moving it to a temporary name and then deleting it.
-    /// This bypasses "Access Denied" errors caused by transient filesystem locks on Linux.
-    /// </summary>
-    private async Task SafePrepareDirectory(string path)
+    private string GenerateMonolithicScript(AuroraManifest m, MakepkgConfig c, string srcDir, string buildDir, string startDir, bool useFakeroot)
     {
-        if (!Directory.Exists(path))
-        {
-            Directory.CreateDirectory(path);
-            return;
-        }
+        var sb = new StringBuilder();
+        sb.AppendLine("#!/bin/bash");
+        sb.AppendLine("set -e");
+        sb.AppendLine("shopt -s nullglob globstar");
 
-        // Try up to 5 times with a backoff
-        for (int i = 0; i < 5; i++)
-        {
-            try
-            {
-                // 1. Generate a random temporary name in the same parent folder
-                string tempPath = path + ".old." + Guid.NewGuid().ToString("N");
-                
-                // 2. Move the busy directory to the temp name
-                // (Linux allows moving a directory even if processes are inside it)
-                Directory.Move(path, tempPath);
-                
-                // 3. Create a fresh directory for the new build immediately
-                Directory.CreateDirectory(path);
+        sb.AppendLine("msg() { echo \"==> $1\"; }; msg2() { echo \"  -> $1\"; };");
+        sb.AppendLine("warning() { echo \"==> WARNING: $1\" >&2; }; error() { echo \"==> ERROR: $1\" >&2; exit 1; }");
 
-                // 4. Fire-and-forget the deletion of the old directory
-                _ = Task.Run(() => {
-                    try { Directory.Delete(tempPath, true); } catch { /* Ignore background cleanup errors */ }
-                });
+        var pkgbuild = Path.Combine(startDir, "PKGBUILD");
+        sb.AppendLine($"source '{pkgbuild}'");
 
-                return;
-            }
-            catch (IOException)
-            {
-                // If it's a metapackage, the filesystem might be extremely busy. 
-                // Wait 100ms and try again.
-                await Task.Delay(100);
-            }
-            catch (UnauthorizedAccessException)
-            {
-                await Task.Delay(100);
-            }
-        }
+        sb.AppendLine("run_prepare() { if type -t prepare &>/dev/null; then msg \"Running prepare()...\" && ( prepare ); fi; }");
+        sb.AppendLine("run_build() { if type -t build &>/dev/null; then msg \"Running build()...\" && ( build ); fi; }");
+        sb.AppendLine("run_check() { if type -t check &>/dev/null; then msg \"Running check()...\" && ( check ); fi; }");
+        
+        sb.AppendLine("scrape_metadata() {");
+        sb.AppendLine("  echo '---AURORA_METADATA_START---'");
+        sb.AppendLine("  printf 'pkgdesc = %s\\n' \"${pkgdesc:-}\"");
+        sb.AppendLine("  local arr; for arr in license provides conflict replaces depend optdepend; do");
+        sb.AppendLine("    local -n ref=\"$arr\" 2>/dev/null || continue;");
+        sb.AppendLine("    for item in \"${ref[@]}\"; do [[ -n \"$item\" ]] && printf '%s = %s\\n' \"$arr\" \"$item\"; done;");
+        sb.AppendLine("  done; echo '---AURORA_METADATA_END---';");
+        sb.AppendLine("}");
 
-        // Final fallback: just try a standard delete
-        if (Directory.Exists(path))
-        {
-            Directory.Delete(path, true);
-            Directory.CreateDirectory(path);
-        }
+        sb.AppendLine("cd \"$srcdir\"");
+        sb.AppendLine("run_prepare");
+        sb.AppendLine("run_build");
+        if (m.Build.Options.Contains("check")) sb.AppendLine("run_check");
+
+        sb.AppendLine("msg \"Starting packaging phase...\"");
+        sb.AppendLine("for pkg_name_entry in \"${pkgname[@]}\"; do");
+        sb.AppendLine("  pkgdir_entry=\"" + buildDir + "/pkg/$pkg_name_entry\"");
+        sb.AppendLine("  rm -rf \"$pkgdir_entry\"");
+        sb.AppendLine("  mkdir -p \"$pkgdir_entry\"");
+        
+        // Export variables so the sub-shell (fakeroot) can see them
+        sb.AppendLine("  export CURRENT_PKG_NAME=\"$pkg_name_entry\"");
+        sb.AppendLine("  export CURRENT_PKG_DIR=\"$pkgdir_entry\"");
+        
+        sb.AppendLine("  msg \"Packaging $CURRENT_PKG_NAME...\"");
+        sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$CURRENT_PKG_NAME\"");
+        
+        // Sub-shell command for packaging
+        string cmd = $"source '{pkgbuild}'; " +
+                     "export pkgname=\"$CURRENT_PKG_NAME\"; " +
+                     "export pkgdir=\"$CURRENT_PKG_DIR\"; " +
+                     $"export srcdir='{srcDir}'; " +
+                     $"export startdir='{startDir}'; " +
+                     "pkg_func=\"package_$pkgname\"; " +
+                     "if ! type -t \"$pkg_func\" &>/dev/null; then pkg_func='package'; fi; " +
+                     "cd \"$srcdir\" && \"$pkg_func\"";
+
+        if (useFakeroot) sb.AppendLine($"  fakeroot bash -c '{cmd}'");
+        else sb.AppendLine($"  bash -c '{cmd}'");
+        
+        // Metadata is scraped in the main shell context
+        sb.AppendLine("  export pkgname=\"$CURRENT_PKG_NAME\"");
+        sb.AppendLine("  export pkgdir=\"$CURRENT_PKG_DIR\"");
+        sb.AppendLine("  scrape_metadata");
+        sb.AppendLine("done");
+
+        return sb.ToString();
     }
     
     private void ConfigureBuildEnvironment(ProcessStartInfo psi, MakepkgConfig c, AuroraManifest m, string srcDir, string buildDir, string startDir)
     {
-        // NO psi.Environment.Clear() - We need system env for tool discovery (m4, etc)
-        
-        // 1. Force a standard, minimal PATH
         var path = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
         if (m.Build.Options.Contains("ccache"))
         {
@@ -337,30 +274,23 @@ public class ArchBuildProvider : IBuildProvider
         }
         psi.Environment["PATH"] = path;
 
-        // 2. Set critical shell vars for configure scripts
         psi.Environment["SHELL"] = "/bin/bash";
         psi.Environment["LC_ALL"] = "C";
         psi.Environment["LANG"] = "C";
         psi.Environment["HOME"] = buildDir;
 
-        // 3. Set standard makepkg directory variables
         psi.Environment["srcdir"] = srcDir;
         psi.Environment["startdir"] = startDir;
-        // Set pkgdir to the main package directory as a default
-        psi.Environment["pkgdir"] = Path.Combine(buildDir, "pkg", m.Package.Name);
 
-        // 4. Inject architecture and host
         psi.Environment["CARCH"] = c.Arch;
         psi.Environment["CHOST"] = c.Chost;
 
-        // 5. Inject compiler and make flags
         psi.Environment["CFLAGS"] = c.CFlags;
         psi.Environment["CXXFLAGS"] = c.CxxFlags;
         psi.Environment["CPPFLAGS"] = c.CppFlags;
         psi.Environment["LDFLAGS"] = c.LdFlags;
         psi.Environment["MAKEFLAGS"] = c.MakeFlags;
 
-        // 6. Handle Debug and LTO
         if (m.Build.Options.Contains("debug"))
         {
             var map = $"-ffile-prefix-map={srcDir}=/usr/src/debug/{m.Package.Name}";
