@@ -219,11 +219,13 @@ public async Task<AuroraManifest> RunPackageFunctionAsync(string functionName, A
         
         shim.AppendLine($"if type -t \"{functionName}\" &>/dev/null; then cd \"$srcdir\" && \"{functionName}\"; fi");
 
+        // This helper function now uses a nameref (`local -n`) for safe, robust indirection.
         shim.AppendLine("print_meta_arr() {");
-        shim.AppendLine("  local key=$1;");
-        shim.AppendLine("  eval \"local arr_val=(\\\"${${key}[@]-}\\\")\""); // Safer array expansion
+        shim.AppendLine("  local key=$1");
+        // 'arr_ref' becomes a direct alias to the array whose name is stored in 'key'
+        shim.AppendLine("  local -n arr_ref=\"$key\" 2>/dev/null || return 0");
         shim.AppendLine("  echo \"  $key:\"");
-        shim.AppendLine("  for x in \"${arr_val[@]}\"; do");
+        shim.AppendLine("  for x in \"${arr_ref[@]}\"; do");
         shim.AppendLine("    [[ -n \"$x\" ]] && printf \"    - \\\"%s\\\"\\n\" \"$x\";");
         shim.AppendLine("  done");
         shim.AppendLine("}");
