@@ -73,7 +73,6 @@ public class ArchBuildProvider : IBuildProvider
         bool useFakeroot = FakerootHelper.IsAvailable();
         var scriptPath = Path.Combine(absoluteBuildDir, "aurora_build_script.sh");
         
-        // --- IMPROVED SCRIPT GENERATION ---
         var scriptContent = GenerateMonolithicScript(manifest, sysConfig, srcDir, absoluteBuildDir, absoluteStartDir, useFakeroot);
         await File.WriteAllTextAsync(scriptPath, scriptContent);
         File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -138,20 +137,16 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("set -e");
         sb.AppendLine("shopt -s nullglob globstar");
 
-        // UI Helpers
         sb.AppendLine("msg() { echo \"==> $1\"; }; msg2() { echo \"  -> $1\"; };");
         sb.AppendLine("warning() { echo \"==> WARNING: $1\" >&2; }; error() { echo \"==> ERROR: $1\" >&2; exit 1; }");
 
-        // Source PKGBUILD once
         var pkgbuild = Path.Combine(startDir, "PKGBUILD");
         sb.AppendLine($"source '{pkgbuild}'");
 
-        // Wrap lifecycle in subshells
         sb.AppendLine("run_prepare() { if type -t prepare &>/dev/null; then msg \"Running prepare()...\" && ( prepare ); fi; }");
         sb.AppendLine("run_build() { if type -t build &>/dev/null; then msg \"Running build()...\" && ( build ); fi; }");
         sb.AppendLine("run_check() { if type -t check &>/dev/null; then msg \"Running check()...\" && ( check ); fi; }");
         
-        // Metadata Scraper
         sb.AppendLine("scrape_metadata() {");
         sb.AppendLine("  echo '---AURORA_METADATA_START---'");
         sb.AppendLine("  printf 'pkgdesc = %s\\n' \"${pkgdesc:-}\"");
@@ -161,19 +156,17 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("  done; echo '---AURORA_METADATA_END---';");
         sb.AppendLine("}");
 
-        // Build Process
         sb.AppendLine("cd \"$srcdir\"");
         sb.AppendLine("run_prepare");
         sb.AppendLine("run_build");
         if (m.Build.Options.Contains("check")) sb.AppendLine("run_check");
 
-        // Packaging Logic
         sb.AppendLine("msg \"Starting packaging phase...\"");
         
-        // Create a dedicated environment file to pass variables to fakeroot bash
-        // This solves the "empty pkgdir" problem.
+        // --- IMPROVED ENVIRONMENT CLONING ---
+        // Filter out read-only bash variables that cause 'Permission Denied' or 'Readonly' errors during source
         sb.AppendLine("ENV_FILE=$(mktemp)");
-        sb.AppendLine("declare -p > \"$ENV_FILE\"");
+        sb.AppendLine("declare -p | grep -Ev '^declare -[a-z-]* (BASHOPTS|BASH_VERSINFO|EUID|PPID|SHELLOPTS|UID)=' > \"$ENV_FILE\" || true");
 
         sb.AppendLine("for pkg_name_entry in \"${pkgname[@]}\"; do");
         sb.AppendLine("  export CURRENT_PKG_NAME=\"$pkg_name_entry\"");
@@ -183,11 +176,6 @@ public class ArchBuildProvider : IBuildProvider
         sb.AppendLine("  msg \"Packaging $CURRENT_PKG_NAME...\"");
         sb.AppendLine("  echo \"---AURORA_PACKAGE_START|$CURRENT_PKG_NAME\"");
         
-        // This is the payload script for fakeroot
-        // 1. Source the captured environment (restores CFLAGS, etc)
-        // 2. Set the package-specific variables
-        // 3. Re-source the PKGBUILD (restores functions)
-        // 4. Run the function
         var fakerootPayload = "set -e; source \"$1\"; " +
                               "export pkgname=\"$CURRENT_PKG_NAME\"; " +
                               "export pkgdir=\"$CURRENT_PKG_DIR\"; " +
@@ -199,7 +187,6 @@ public class ArchBuildProvider : IBuildProvider
         string fakerootCmd = useFakeroot ? "fakeroot --" : "";
         sb.AppendLine($"  {fakerootCmd} bash -c '{fakerootPayload}' -- \"$ENV_FILE\"");
         
-        // Scrape metadata in the parent shell
         sb.AppendLine("  export pkgname=\"$CURRENT_PKG_NAME\" pkgdir=\"$CURRENT_PKG_DIR\"");
         sb.AppendLine("  ( source '" + pkgbuild + "'; scrape_metadata )");
         sb.AppendLine("done");
