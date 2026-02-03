@@ -5,6 +5,8 @@ using Aurora.Core.Models;
 using Aurora.Core.Parsing;
 using Aurora.Core.Security;
 using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Sockets;
 
 namespace Aurora.Core.Net;
 
@@ -22,9 +24,18 @@ public class RepoManager
         {
             AllowAutoRedirect = true,
             AutomaticDecompression = DecompressionMethods.All,
+            ConnectCallback = async (context, cancellationToken) =>
+            {
+                var entry = await Dns.GetHostEntryAsync(context.DnsEndPoint.Host, AddressFamily.InterNetwork, cancellationToken);
+                var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                await socket.ConnectAsync(new IPEndPoint(entry.AddressList[0], context.DnsEndPoint.Port), cancellationToken);
+                return new NetworkStream(socket, true);
+            }
         };
-        _client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(15) };
-        _client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Aurora Package Manager)");
+
+        _client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(30) };
+        _client.DefaultRequestHeaders.Clear();
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Aurora Package Manager)");
     }
 
     /// <summary>
@@ -56,6 +67,7 @@ public class RepoManager
 
             try
             {
+                // Both calls now use the same unified FetchFile helper
                 await FetchFile(repo.Url, repoFileName, targetFile);
                 await FetchFile(repo.Url, repoFileName + ".asc", sigFile);
 
@@ -88,82 +100,64 @@ public class RepoManager
         var filename = $"{pkg.Name}-{pkg.Version}-{pkg.Arch}.au";
         var cachePath = Path.Combine(cacheDir, filename);
 
-        // 1. Check Cache with Integrity
         if (File.Exists(cachePath))
         {
-            if (!string.IsNullOrEmpty(pkg.Checksum))
+            if (!string.IsNullOrEmpty(pkg.Checksum) && HashHelper.ComputeFileHash(cachePath) == pkg.Checksum)
             {
-                var cachedHash = HashHelper.ComputeFileHash(cachePath);
-                if (cachedHash == pkg.Checksum)
-                {
-                    var info = new FileInfo(cachePath);
-                    onProgress(info.Length, info.Length); // Signal 100%
-                    return cachePath;
-                }
-                File.Delete(cachePath); // Corrupted, re-download
+                var info = new FileInfo(cachePath);
+                onProgress(info.Length, info.Length);
+                return cachePath;
             }
-            else
-            {
-                return cachePath; // No checksum, trust it for now
-            }
+            File.Delete(cachePath);
         }
 
         Directory.CreateDirectory(cacheDir);
 
-        // 2. Try all configured repos
         var repos = RepoConfigParser.Parse(File.ReadAllText(PathHelper.GetPath(_rootPath, "etc/aurora/repolist")));
         
         foreach (var repo in repos.Values.Where(r => r.Enabled))
         {
             try
             {
-                // Attempt to fetch the file from this repository
                 await FetchFile(repo.Url, filename, cachePath, onProgress);
 
-                // 3. Verify Download
-                if (!string.IsNullOrEmpty(pkg.Checksum))
+                if (!string.IsNullOrEmpty(pkg.Checksum) && HashHelper.ComputeFileHash(cachePath) != pkg.Checksum)
                 {
-                    var downloadedHash = HashHelper.ComputeFileHash(cachePath);
-                    if (downloadedHash != pkg.Checksum)
-                    {
-                        File.Delete(cachePath);
-                        throw new InvalidDataException($"Security Error: Checksum mismatch for {pkg.Name}.");
-                    }
+                    File.Delete(cachePath);
+                    throw new InvalidDataException($"Security Error: Checksum mismatch for {pkg.Name}.");
                 }
                 
-                // Success!
                 return cachePath;
             }
-            catch
-            {
-                // File not found in this repo, or download failed. Try the next one.
-            }
+            catch { /* Try the next repo */ }
         }
 
-        return null; // Not found in any repo
+        return null;
     }
 
     /// <summary>
-    /// Internal helper for fetching any file (repo metadata or package).
+    /// The single, unified helper for fetching any file.
     /// </summary>
     private async Task FetchFile(string baseUrl, string filename, string destination, Action<long?, long>? onProgress = null)
     {
+        // Use Uri constructor to handle slashes correctly.
+        // Base: https://packages.lumina.1t.ru/core
+        // File: core.aurepo
+        // Result: https://packages.lumina.1t.ru/core/core.aurepo
         var baseUri = new Uri(baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/");
         var fullUri = new Uri(baseUri, filename);
 
         if (fullUri.Scheme == "file")
         {
             var sourcePath = fullUri.LocalPath;
-            if (!File.Exists(sourcePath)) throw new FileNotFoundException($"Remote file not found: {sourcePath}");
+            if (!File.Exists(sourcePath)) throw new FileNotFoundException($"Local file not found: {sourcePath}");
             File.Copy(sourcePath, destination, overwrite: true);
-            
-            // Report 100% for local files
             var info = new FileInfo(sourcePath);
             onProgress?.Invoke(info.Length, info.Length);
         }
         else
         {
-            var request = new HttpRequestMessage(HttpMethod.Get, fullUri);
+            var request = new HttpRequestMessage(HttpMethod.Get, fullUri) { Version = HttpVersion.Version11 };
             using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             response.EnsureSuccessStatusCode();
 
