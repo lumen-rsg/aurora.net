@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
+using System.Text;
 using Aurora.Core.Models;
 using Aurora.Core.Parsing;
-using Spectre.Console;
 
 namespace Aurora.Core.IO;
 
@@ -16,14 +16,12 @@ public static class PackageExtractor
 
         try
         {
-            // 1. Try Fast .NET Path
+            // 1. Try Fast .NET Path (Only works for .gz)
             return ReadManifestInternal(packagePath);
         }
         catch
         {
-            // 2. Fallback to System Tar (Robust Path)
-            // au-repotool needs to be bulletproof. If .NET fails on a specific gzip flag,
-            // the system tar usually handles it fine.
+            // 2. Fallback to System Tar (Robust Path for .zst)
             return ReadManifestViaTar(packagePath);
         }
     }
@@ -32,12 +30,10 @@ public static class PackageExtractor
     {
         try
         {
-            // 1. Try Fast .NET Path
             return GetFileListInternal(packagePath);
         }
         catch
         {
-            // 2. Fallback to System Tar
             return GetFileListViaTar(packagePath);
         }
     }
@@ -55,7 +51,6 @@ public static class PackageExtractor
             var name = entry.Name.Replace('\\', '/');
             if (name.StartsWith("./")) name = name.Substring(2);
 
-            // CHANGED: Look for .PKGINFO instead of aurora.meta
             if (name == ".PKGINFO")
             {
                 using var stream = entry.DataStream;
@@ -63,12 +58,10 @@ public static class PackageExtractor
 
                 using var reader = new StreamReader(stream);
                 var content = reader.ReadToEnd();
-                
-                // CHANGED: Call the new parser method
                 return PackageParser.ParsePkgInfo(content);
             }
         }
-        throw new InvalidDataException("Invalid package: .PKGINFO not found");
+        throw new InvalidDataException("Manifest not found via .NET reader");
     }
 
     private static List<string> GetFileListInternal(string packagePath)
@@ -83,8 +76,7 @@ public static class PackageExtractor
             var name = entry.Name.Replace('\\', '/');
             if (name.StartsWith("./")) name = name.Substring(2);
 
-            // Filter metadata
-            if (name == ".PKGINFO" || name == ".INSTALL" || name == ".MTREE" || name.EndsWith("/"))
+            if (string.IsNullOrEmpty(name) || name == ".PKGINFO" || name == ".INSTALL" || name == ".MTREE" || name.EndsWith("/"))
                 continue;
 
             files.Add("/" + name.TrimStart('/'));
@@ -92,17 +84,17 @@ public static class PackageExtractor
         return files;
     }
 
-    // --- SYSTEM TAR FALLBACKS ---
+    // --- SYSTEM TAR FALLBACKS (FIXED) ---
 
     private static Package ReadManifestViaTar(string packagePath)
     {
-        // CHANGED: Extract .PKGINFO
         var psi = new ProcessStartInfo
         {
             FileName = "tar",
+            // -x: extract, -O: to stdout, -f: file
             Arguments = $"-xO -f \"{packagePath}\" .PKGINFO",
             RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            RedirectStandardError = true, // We capture this to prevent deadlock
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -110,22 +102,31 @@ public static class PackageExtractor
         using var process = Process.Start(psi);
         if (process == null) throw new Exception("Failed to start tar.");
 
-        var content = process.StandardOutput.ReadToEnd();
+        // FIX: Use events to read streams asynchronously to avoid deadlocks
+        // if the buffer fills up.
+        StringBuilder stdout = new();
+        StringBuilder stderr = new();
+
+        process.OutputDataReceived += (sender, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+        process.ErrorDataReceived += (sender, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
         process.WaitForExit();
 
-        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(content))
+        if (process.ExitCode != 0 || stdout.Length == 0)
         {
-            throw new Exception($"Failed to extract .PKGINFO from {Path.GetFileName(packagePath)} using system tar.");
+            // If tar failed, we might want to see why
+            string err = stderr.ToString();
+            throw new Exception($"Failed to extract .PKGINFO from {Path.GetFileName(packagePath)}. Tar error: {err}");
         }
 
-        // CHANGED: Call the new parser method
-        return PackageParser.ParsePkgInfo(content);
+        return PackageParser.ParsePkgInfo(stdout.ToString());
     }
 
     private static List<string> GetFileListViaTar(string packagePath)
     {
-        // Command: tar -tf package.au
-        // -t: list
         var files = new List<string>();
         var psi = new ProcessStartInfo
         {
@@ -140,6 +141,12 @@ public static class PackageExtractor
         using var process = Process.Start(psi);
         if (process == null) return files;
 
+        // Synchronous read is safer here if we don't care about stderr blocking 
+        // (usually file lists don't generate massive stderr warnings), 
+        // but for consistency, let's use the event model if the list is huge.
+        // However, for lists, line-by-line processing is often cleaner. 
+        // We will stick to standard readline loop but read stderr at the end.
+        
         string? line;
         while ((line = process.StandardOutput.ReadLine()) != null)
         {
@@ -148,19 +155,22 @@ public static class PackageExtractor
 
             var fileName = Path.GetFileName(name);
             
-            // Filter metadata and directories ending in /
             if (string.IsNullOrEmpty(fileName) || 
                 name.EndsWith("/") ||
-                name.Contains(".MTREE") || 
+                name.Contains(".AURORA_") || 
                 name == ".PKGINFO" || 
-                name == ".SRCINFO" || 
+                name == ".MTREE" || 
+                name == ".BUILDINFO" ||
                 name == ".INSTALL")
                 continue;
 
             files.Add("/" + name.TrimStart('/'));
         }
         
+        // Drain stderr to ensure process closes
+        process.StandardError.ReadToEnd();
         process.WaitForExit();
+        
         return files;
     }
 }
