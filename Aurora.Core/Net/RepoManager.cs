@@ -135,16 +135,17 @@ public class RepoManager
     private async Task FetchFile(string baseUrl, string filename, string destination, Action<long?, long>? onProgress = null)
     {
         var baseUriString = baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/";
-        
-        // URI FIX: If the filename contains a colon (Epoch), the Uri(base, relative) constructor 
-        // will misinterpret the filename as a URI Scheme (e.g. zlib-1:).
-        // We escape the colon as %3A to ensure it is treated strictly as a path component.
         var escapedFilename = filename.Replace(":", "%3A");
         var fullUri = new Uri(baseUriString + escapedFilename);
+
+        // --- DEBUG LOGGING ---
+        AuLogger.Debug($"[Network] Requesting: {fullUri}");
+        // ---------------------
 
         if (fullUri.Scheme == "file")
         {
             var sourcePath = fullUri.LocalPath;
+            if (!File.Exists(sourcePath)) throw new FileNotFoundException($"Local file mirror not found: {sourcePath}");
             File.Copy(sourcePath, destination, overwrite: true);
             var info = new FileInfo(sourcePath);
             onProgress?.Invoke(info.Length, info.Length);
@@ -153,7 +154,13 @@ public class RepoManager
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, fullUri) { Version = HttpVersion.Version11 };
             using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                // Log the failure details
+                AuLogger.Error($"[Network] 404 Fail. URL: {fullUri} | Status: {response.StatusCode}");
+                throw new Exception($"Mirror error: {(int)response.StatusCode} {response.ReasonPhrase} ({fullUri})");
+            }
 
             var totalBytes = response.Content.Headers.ContentLength;
             await using var downloadStream = await response.Content.ReadAsStreamAsync();
