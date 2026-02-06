@@ -35,9 +35,29 @@ public class DependencyRequest
 
     public bool IsSatisfiedBy(Package pkg)
     {
+        // 1. Basic Name/Provision Check
+        // (This function is usually called after the name match is confirmed by the solver,
+        // but it doesn't hurt to be safe if reused elsewhere)
+        
         if (Operator == null || Version == null) return true;
 
-        int cmp = VersionComparer.Compare(pkg.Version, Version);
+        string candidateVer = pkg.Version;
+        string requiredVer = Version;
+
+        // --- FIX: Implicit Pkgrel Matching ---
+        // If the requirement (e.g. "26.01.0") does NOT specify a release (no '-'),
+        // but the candidate ("26.01.0-1") DOES, we strip the release from the candidate.
+        // This treats "26.01.0-1" as equal to "26.01.0".
+        if (!requiredVer.Contains('-') && candidateVer.Contains('-'))
+        {
+            int hyphenIndex = candidateVer.IndexOf('-');
+            if (hyphenIndex > 0)
+            {
+                candidateVer = candidateVer.Substring(0, hyphenIndex);
+            }
+        }
+
+        int cmp = VersionComparer.Compare(candidateVer, requiredVer);
 
         return Operator switch
         {
@@ -50,20 +70,26 @@ public class DependencyRequest
         };
     }
     
-    // Add this method to DependencyRequest class
     public bool Satisfies(DependencyRequest other)
     {
-        // If names don't match, they don't satisfy
         if (Name != other.Name) return false;
-
-        // If the other (the dependency) doesn't care about version, we are good
         if (other.Operator == null || other.Version == null) return true;
-
-        // If we (the provision) don't have a version, but they require one, we usually fail
         if (Version == null) return false;
 
-        // Compare our version against their constraint
-        int cmp = VersionComparer.Compare(Version, other.Version);
+        string myVer = Version;
+        string otherVer = other.Version;
+
+        // Apply the same logic for Provides comparisons
+        if (!otherVer.Contains('-') && myVer.Contains('-'))
+        {
+            int hyphenIndex = myVer.IndexOf('-');
+            if (hyphenIndex > 0)
+            {
+                myVer = myVer.Substring(0, hyphenIndex);
+            }
+        }
+
+        int cmp = VersionComparer.Compare(myVer, otherVer);
 
         return other.Operator switch
         {
