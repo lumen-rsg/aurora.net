@@ -14,39 +14,28 @@ public class HookEngine
 
     public HookEngine(string sysRoot)
     {
-        _sysRoot = sysRoot;
+        _sysRoot = Path.GetFullPath(sysRoot);
         LoadHooks();
     }
 
     private void LoadHooks()
     {
-        // 1. Define Paths (Standard Arch paths)
         var systemHooksDir = PathHelper.GetPath(_sysRoot, "usr/share/libalpm/hooks");
         var userHooksDir = PathHelper.GetPath(_sysRoot, "etc/pacman.d/hooks");
-
         var hookMap = new Dictionary<string, AlpmHook>();
 
-        // 2. Load System Hooks
-        if (Directory.Exists(systemHooksDir))
+        void ScanDir(string dir)
         {
-            foreach (var file in Directory.GetFiles(systemHooksDir, "*.hook"))
+            if (!Directory.Exists(dir)) return;
+            foreach (var file in Directory.GetFiles(dir, "*.hook"))
             {
                 var h = HookParser.Parse(file);
                 if (h != null) hookMap[h.Name] = h;
             }
         }
 
-        // 3. Load User Hooks (Override system hooks with same name)
-        if (Directory.Exists(userHooksDir))
-        {
-            foreach (var file in Directory.GetFiles(userHooksDir, "*.hook"))
-            {
-                var h = HookParser.Parse(file);
-                if (h != null) hookMap[h.Name] = h;
-            }
-        }
-
-        // 4. Sort lexically (standard alpm behavior)
+        ScanDir(systemHooksDir);
+        ScanDir(userHooksDir);
         _allHooks.AddRange(hookMap.Values.OrderBy(h => h.Name));
     }
 
@@ -55,16 +44,8 @@ public class HookEngine
         var applicableHooks = _allHooks.Where(h => h.When == when).ToList();
         if (applicableHooks.Count == 0) return;
 
-        // Pre-calculate file lists for "File" triggers
         var changedFiles = new List<string>();
-        foreach (var pkg in transactionPackages)
-        {
-            // Note: In a real update, we should distinguish files being removed vs installed.
-            // For now, we aggregate all files in the transaction scope.
-            changedFiles.AddRange(pkg.Files);
-        }
-
-        AnsiConsole.MarkupLine($"[grey]Checking {applicableHooks.Count} hooks ({when})...[/]");
+        foreach (var pkg in transactionPackages) changedFiles.AddRange(pkg.Files);
 
         foreach (var hook in applicableHooks)
         {
@@ -73,14 +54,10 @@ public class HookEngine
 
             foreach (var trigger in hook.Triggers)
             {
-                // 1. Filter by Operation (Install/Upgrade/Remove)
-                // Note: In a real mixed transaction, we'd check per package. 
-                // Currently simplifying assuming uniform transaction op.
                 if (trigger.Operation != currentOp) continue;
 
                 if (trigger.Type == TriggerType.Package)
                 {
-                    // Check if target package is in transaction
                     foreach (var pkg in transactionPackages)
                     {
                         if (pkg.Name == trigger.Target)
@@ -92,16 +69,10 @@ public class HookEngine
                 }
                 else if (trigger.Type == TriggerType.File)
                 {
-                    // Convert Glob to Regex
                     var regex = GlobToRegex(trigger.Target);
-                    
                     foreach (var file in changedFiles)
                     {
-                        // Strip leading slash for matching logic if needed, 
-                        // but usually alpm paths are relative or absolute? 
-                        // Arch hooks usually look like "usr/lib/..." (no leading slash)
                         var cleanFile = file.TrimStart('/');
-                        
                         if (regex.IsMatch(cleanFile))
                         {
                             shouldRun = true;
@@ -121,71 +92,77 @@ public class HookEngine
     private async Task ExecuteHookAsync(AlpmHook hook, HashSet<string> targets)
     {
         var desc = string.IsNullOrEmpty(hook.Description) ? hook.Name : hook.Description;
-        AnsiConsole.MarkupLine($"[blue] -> Running hook:[/] {desc} ...");
+        AnsiConsole.MarkupLine($"[blue]:: Running hook:[/] {desc} ...");
         AuLogger.Info($"Executing hook: {hook.Name}");
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = "/bin/bash",
-            Arguments = $"-c \"{hook.Exec}\"",
-            RedirectStandardInput = hook.NeedsTargets,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
+        ProcessStartInfo psi;
+        bool isChroot = _sysRoot != "/";
 
-        // Important: Hooks run inside the SysRoot context? 
-        // Arch hooks assume they run on the live system.
-        // If we are bootstrapping to a directory (--bootstrap), we might need `chroot`.
-        // For now, we assume standard execution, but we might prepend the sysroot to paths logic later.
-        
+        if (isChroot)
+        {
+            // Bootstrap mode: Use host chroot
+            psi = new ProcessStartInfo
+            {
+                FileName = "chroot",
+                // We use /usr/bin/bash inside the chroot to execute the command string
+                Arguments = $"\"{_sysRoot}\" /usr/bin/bash -c \"{hook.Exec}\"",
+                RedirectStandardInput = hook.NeedsTargets,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+        }
+        else
+        {
+            // Live mode
+            psi = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                Arguments = $"-c \"{hook.Exec}\"",
+                RedirectStandardInput = hook.NeedsTargets,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+        }
+
         try
         {
             using var proc = Process.Start(psi);
             if (proc == null) return;
 
-            // Handle NeedsTargets (Pipe file list to stdin)
             if (hook.NeedsTargets)
             {
+                // Join with newlines for standard alpm behavior
                 await proc.StandardInput.WriteAsync(string.Join("\n", targets));
                 proc.StandardInput.Close();
             }
 
-            // Capture output to log, maybe show spinner
-            var output = await proc.StandardOutput.ReadToEndAsync();
-            var error = await proc.StandardError.ReadToEndAsync();
-            
-            await proc.WaitForExitAsync();
+            proc.OutputDataReceived += (s, e) => { if (e.Data != null && !string.IsNullOrWhiteSpace(e.Data)) AnsiConsole.MarkupLine($"    [grey]{Markup.Escape(e.Data)}[/]"); };
+            proc.ErrorDataReceived += (s, e) => { if (e.Data != null && !string.IsNullOrWhiteSpace(e.Data)) AnsiConsole.MarkupLine($"    [red]{Markup.Escape(e.Data)}[/]"); };
 
-            if (!string.IsNullOrWhiteSpace(output)) AuLogger.Debug($"[Hook Output] {output}");
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+            await proc.WaitForExitAsync();
 
             if (proc.ExitCode != 0)
             {
-                AnsiConsole.MarkupLine($"[red]Hook failed:[/] {error}");
-                AuLogger.Error($"Hook {hook.Name} failed: {error}");
-                
-                if (hook.AbortOnFail)
-                {
-                    throw new Exception($"Critical hook {hook.Name} failed.");
-                }
+                AnsiConsole.MarkupLine($"[yellow]Warning:[/] Hook {hook.Name} failed (Exit Code {proc.ExitCode})");
+                if (hook.AbortOnFail) throw new Exception($"Critical hook {hook.Name} failed.");
             }
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error executing hook:[/] {ex.Message}");
+            AnsiConsole.MarkupLine($"[red]Hook Error:[/] {ex.Message}");
             if (hook.AbortOnFail) throw;
         }
     }
 
     private Regex GlobToRegex(string glob)
     {
-        // Simple Glob to Regex converter for path matching
-        // Escapes dots, converts * to .*, etc.
-        var pattern = "^" + Regex.Escape(glob)
-            .Replace(@"\*", ".*")
-            .Replace(@"\?", ".") + "$";
-        
+        var pattern = "^" + Regex.Escape(glob).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
         return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 }

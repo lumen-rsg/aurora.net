@@ -172,6 +172,14 @@ public class InstallCommand : ICommand
                         tx.AppendToJournal(physical);
                         manifestFiles.Add(manifest);
                     });
+                    
+                    string? installScript = PackageInstaller.ExtractScript(pkgFile, Path.GetTempPath());
+                    if (installScript != null)
+                    {
+                        // Post-Install: Passes the version of the package being installed
+                        ScriptRunner.RunScript(installScript, "post_install", config.SysRoot, pkg.Version);
+                        File.Delete(installScript);
+                    }
 
                     pkg.Files = manifestFiles;
                     if (tx.Database.IsInstalled(pkg.Name)) tx.RemovePackage(pkg.Name);

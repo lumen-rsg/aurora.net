@@ -5,7 +5,7 @@ using Aurora.Core.Logging;
 using Aurora.Core.Logic;
 using Spectre.Console;
 
-class Program
+class wProgram
 {
     static async Task<int> Main(string[] args)
     {

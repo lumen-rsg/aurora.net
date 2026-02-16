@@ -1,6 +1,6 @@
 using Aurora.Core.IO;
 using Aurora.Core.Logic;
-using Aurora.Core.Logic.Hooks; // Hook Logic
+using Aurora.Core.Logic.Hooks;
 using Aurora.Core.Models;
 using Spectre.Console;
 
@@ -30,9 +30,6 @@ public class RemoveCommand : ICommand
                 return;
             }
 
-            // TODO: In the future, check reverse dependencies here.
-            // e.g. "Cannot remove 'glibc' because 'bash' depends on it."
-            
             // 3. User Confirmation
             var table = new Table().Border(TableBorder.Rounded);
             table.AddColumn("Removing");
@@ -55,28 +52,30 @@ public class RemoveCommand : ICommand
             await hookEngine.RunHooksAsync(HookWhen.PreTransaction, targetList, TriggerOperation.Remove);
 
             // 6. Legacy Script Support (Pre-Remove)
-            // Some older packages might use shell scripts instead of hooks
+            // Look for saved install scripts (e.g. /var/lib/aurora/scripts/pkgname.sh)
             var scriptPath = Path.Combine(config.ScriptDir, $"{pkgName}.sh");
             bool hasScript = File.Exists(scriptPath);
 
             if (hasScript)
             {
-                AnsiConsole.MarkupLine("[grey]Running legacy pre-remove script...[/]");
-                ScriptRunner.RunScript(scriptPath, "pre_remove", config.SysRoot);
+                // pre_remove receives the version being removed as $1
+                ScriptRunner.RunScript(scriptPath, "pre_remove", config.SysRoot, pkg.Version);
             }
 
             // 7. Physical Removal
             AnsiConsole.Status().Start($"Removing {pkgName}...", ctx =>
             {
-                // Delete files listed in the database for this package
+                // Delete files listed in the database
                 foreach (var manifestPath in pkg.Files)
                 {
                     var physicalPath = PathHelper.GetPath(config.SysRoot, manifestPath);
+                    
                     if (File.Exists(physicalPath))
                     {
                         File.Delete(physicalPath);
                         
-                        // Clean up empty parent directory
+                        // Clean up empty parent directories recursively up to root
+                        // (Simplified here to just immediate parent to avoid destroying system dirs)
                         var dir = Path.GetDirectoryName(physicalPath);
                         if (dir != null && Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
                         {
@@ -98,8 +97,10 @@ public class RemoveCommand : ICommand
             // 8. Legacy Script Support (Post-Remove)
             if (hasScript)
             {
-                AnsiConsole.MarkupLine("[grey]Running legacy post-remove script...[/]");
-                ScriptRunner.RunScript(scriptPath, "post_remove", config.SysRoot);
+                // post_remove receives the version being removed as $1
+                ScriptRunner.RunScript(scriptPath, "post_remove", config.SysRoot, pkg.Version);
+                
+                // Cleanup the script itself
                 try { File.Delete(scriptPath); } catch { }
             }
 
@@ -115,9 +116,7 @@ public class RemoveCommand : ICommand
         catch (Exception ex)
         {
             AnsiConsole.MarkupLine($"[red bold]Removal Failed:[/] {Markup.Escape(ex.Message)}");
-            // Transaction auto-rollback handles DB consistency, 
-            // but deleted files (physical) are harder to rollback without a backup cache.
-            // Aurora's current transaction model is primarily for DB consistency + crash recovery logic.
+            // Transaction auto-rollback handles DB consistency
         }
     }
 }
