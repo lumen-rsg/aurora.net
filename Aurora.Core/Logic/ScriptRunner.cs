@@ -10,38 +10,29 @@ public static class ScriptRunner
     {
         if (!File.Exists(scriptPath)) return;
 
-        // Arch .INSTALL standard:
-        // post_install <package_version>
-        // post_upgrade <new_version> <old_version>
-        // pre_remove <old_version>
+        // Arch .INSTALL standard args
         string args = $"'{version}'";
         if (!string.IsNullOrEmpty(oldVersion)) args += $" '{oldVersion}'";
 
-        // Shim to source the file and run the function if it exists
         string bashCommand = $"source '{scriptPath}'; if type -t {functionName} | grep -q 'function'; then {functionName} {args}; fi";
 
-        // Logic for Chroot vs Host
         ProcessStartInfo psi;
         bool isChroot = sysRoot != "/";
 
         if (isChroot)
         {
-            // When bootstrapping, scripts must run inside the target
-            // But the script file is likely on the host at this exact moment?
-            // Actually, in 'InstallCommand', we extract .INSTALL to a temp file.
-            // We need to ensure that temp file is accessible to the chroot.
-            // For safety/simplicity in bootstrapping, usually .INSTALL scripts are run 
-            // via 'arch-chroot' or equivalent.
+            // BOOTSTRAP MODE
+            // We copy the script into the chroot to ensure visibility
+            string tmpDir = Path.Combine(sysRoot, "tmp");
+            Directory.CreateDirectory(tmpDir); // Ensure tmp exists
             
-            // To keep it simple: We map the script path to inside the root if possible,
-            // or we pipe the script content.
-            
-            // For now, let's assume we copy the script into the chroot /tmp to run it.
-            string chrootScriptPath = Path.Combine(sysRoot, "tmp", Path.GetFileName(scriptPath));
+            string chrootScriptPath = Path.Combine(tmpDir, Path.GetFileName(scriptPath));
             File.Copy(scriptPath, chrootScriptPath, true);
+            
             string innerPath = "/tmp/" + Path.GetFileName(scriptPath);
             
-            string innerCommand = $"source '{innerPath}'; if type -t {functionName} | grep -q 'function'; then {functionName} {args}; fi";
+            // CRITICAL FIX: explicit 'cd /' to ensure relative paths in scripts work
+            string innerCommand = $"cd /; source '{innerPath}'; if type -t {functionName} | grep -q 'function'; then {functionName} {args}; fi";
             
             psi = new ProcessStartInfo
             {
@@ -55,6 +46,7 @@ public static class ScriptRunner
         }
         else
         {
+            // HOST MODE
             psi = new ProcessStartInfo
             {
                 FileName = "/bin/bash",
@@ -62,7 +54,9 @@ public static class ScriptRunner
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                // CRITICAL FIX: Set working directory to SysRoot (usually /)
+                WorkingDirectory = sysRoot 
             };
         }
 
@@ -71,7 +65,6 @@ public static class ScriptRunner
         using var process = Process.Start(psi);
         if (process == null) return;
 
-        // Stream Output Live
         process.OutputDataReceived += (s, e) => { if (e.Data != null) PrintScriptlet(e.Data, false); };
         process.ErrorDataReceived += (s, e) => { if (e.Data != null) PrintScriptlet(e.Data, true); };
 
@@ -79,7 +72,6 @@ public static class ScriptRunner
         process.BeginErrorReadLine();
         process.WaitForExit();
 
-        // Cleanup temp file in chroot
         if (isChroot)
         {
             try { File.Delete(Path.Combine(sysRoot, "tmp", Path.GetFileName(scriptPath))); } catch {}
@@ -95,6 +87,7 @@ public static class ScriptRunner
     {
         if (string.IsNullOrWhiteSpace(line)) return;
         string prefix = isError ? "[red]err:|[/]" : "[grey]out:|[/]";
+        // Escape markup to prevent crashing on brackets in output
         AnsiConsole.MarkupLine($"    {prefix} {Markup.Escape(line)}");
     }
 }
