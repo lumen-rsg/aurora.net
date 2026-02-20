@@ -5,7 +5,7 @@ namespace Aurora.Core.Logging;
 public static class AuLogger
 {
     private static readonly object _lock = new();
-    private static string _logPath = "aurora.log";
+    private static string _logPath = "/var/aurora/aurora.log";
 
     public static void Initialize(string path)
     {
