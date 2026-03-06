@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -24,6 +25,7 @@ public class RepoManager
     {
         _rootPath = rootPath;
 
+        // Force IPv4 to prevent 30-second timeouts on misconfigured mirrors
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
@@ -39,45 +41,85 @@ public class RepoManager
 
         _client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(30) };
         _client.DefaultRequestHeaders.Clear();
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Aurora Package Manager; Pacman v2)");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Aurora Package Manager)");
     }
 
     public async Task SyncRepositoriesAsync(Action<string, string> onProgress)
     {
-        var configPath = PathHelper.GetPath(_rootPath, "etc/aurora/repolist");
-        if (!File.Exists(configPath)) return;
+        var reposDir = PathHelper.GetPath(_rootPath, "etc/yum.repos.d");
+       
+        // FIX: Correctly scope the if-statement
+        if (!Directory.Exists(reposDir)) 
+        {
+            AuLogger.Error("No repositories configured at etc/yum.repos.d");
+            return;
+        }
 
-        var repos = RepoConfigParser.Parse(File.ReadAllText(configPath));
+        var repos = RepoConfigParser.ParseDirectory(reposDir);
+        if (repos.Count == 0) return;
+
         var dbDir = PathHelper.GetPath(_rootPath, "var/lib/aurora");
         Directory.CreateDirectory(dbDir);
         var gpgHome = PathHelper.GetPath(_rootPath, "etc/aurora/gnupg");
 
         foreach (var repo in repos.Values.Where(r => r.Enabled))
         {
-            var repoFileName = $"{repo.Id}.json";
-            var targetFile = Path.Combine(dbDir, repoFileName);
-            var sigFile = targetFile + ".sig";
-
-            onProgress(repo.Name, "Syncing...");
+            onProgress(repo.Name, "Syncing repomd.xml...");
 
             try
             {
-                await FetchFile(repo.Url, repoFileName, targetFile);
+                // 1. Fetch repomd.xml
+                var repomdPath = Path.Combine(dbDir, $"{repo.Id}_repomd.xml");
+                await FetchFile(repo.Url, "repodata/repomd.xml", repomdPath);
 
+                // 2. Verify Signature (if provided)
                 if (!SkipSignatureCheck)
                 {
-                    await FetchFile(repo.Url, repoFileName + ".sig", sigFile);
-                    if (!GpgHelper.VerifySignature(targetFile, sigFile, Directory.Exists(gpgHome) ? gpgHome : null))
+                    var sigPath = repomdPath + ".asc";
+                    try
                     {
-                        File.Delete(targetFile);
-                        File.Delete(sigFile);
-                        throw new Exception("Invalid GPG Signature!");
+                        await FetchFile(repo.Url, "repodata/repomd.xml.asc", sigPath);
+                        if (!GpgHelper.VerifySignature(repomdPath, sigPath, Directory.Exists(gpgHome) ? gpgHome : null))
+                        {
+                            throw new Exception("Invalid GPG Signature for repomd.xml!");
+                        }
+                    }
+                    catch (Exception ex) when (!ex.Message.Contains("Signature"))
+                    {
+                        AuLogger.Debug($"No repomd.xml.asc found for {repo.Name}, skipping signature check.");
                     }
                 }
+
+                // 3. Parse repomd.xml to find the primary SQLite DB
+                var xmlContent = await File.ReadAllTextAsync(repomdPath);
+                var primaryDbInfo = RepoMdParser.GetPrimaryDbInfo(xmlContent);
+
+                if (primaryDbInfo == null || string.IsNullOrEmpty(primaryDbInfo.Location))
+                {
+                    throw new Exception("Could not locate primary_db in repomd.xml");
+                }
+
+                onProgress(repo.Name, "Downloading primary database...");
+
+                // 4. Download the compressed SQLite DB
+                string extension = Path.GetExtension(primaryDbInfo.Location); // usually .gz, .bz2, or .zst
+                var compressedDbPath = Path.Combine(dbDir, $"{repo.Id}_primary{extension}");
+                await FetchFile(repo.Url, primaryDbInfo.Location, compressedDbPath);
+
+                // 5. Decompress into the final SQLite file
+                onProgress(repo.Name, "Decompressing...");
+                var targetSqliteFile = Path.Combine(dbDir, $"{repo.Id}.sqlite");
+                await DecompressDatabaseAsync(compressedDbPath, targetSqliteFile);
+
+                // Cleanup
+                File.Delete(compressedDbPath);
+                File.Delete(repomdPath);
+
                 onProgress(repo.Name, "Done");
             }
             catch (Exception ex)
             {
+                AuLogger.Error($"Failed to sync '{repo.Name}': {ex.Message}");
                 onProgress(repo.Name, $"Failed: {ex.Message}");
             }
         }
@@ -85,62 +127,75 @@ public class RepoManager
 
     public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Action<long?, long> onProgress)
     {
-        // Use Filename from DB (which may contain ':')
-        var filename = !string.IsNullOrEmpty(pkg.FileName) 
-            ? pkg.FileName 
-            : $"{pkg.Name}-{pkg.Version}-{pkg.Arch}.au";
+        if (string.IsNullOrEmpty(pkg.LocationHref))
+        {
+            throw new ArgumentException($"Package {pkg.Name} lacks a LocationHref.");
+        }
 
-        // LOCAL PATH FIX: Replace ':' with '_' because colons are illegal/problematic on 
-        // many filesystems (NTFS, APFS) and cause issues with some Linux tools.
-        var localSafeFilename = filename.Replace(":", "_");
-        var cachePath = Path.Combine(cacheDir, localSafeFilename);
+        // RPM defines the exact path in LocationHref (e.g., "Packages/z/zlib-1.2.11-1.fc38.aarch64.rpm")
+        var filename = Path.GetFileName(pkg.LocationHref);
+        var cachePath = Path.Combine(cacheDir, filename);
 
+        // Check Cache & Integrity
         if (File.Exists(cachePath))
         {
+            // RPM uses 'pkgId' as the SHA256 checksum
             if (string.IsNullOrEmpty(pkg.Checksum) || HashHelper.ComputeFileHash(cachePath) == pkg.Checksum)
             {
                 var info = new FileInfo(cachePath);
                 onProgress(info.Length, info.Length);
                 return cachePath;
             }
+            AuLogger.Debug($"Cache mismatch for {filename}, re-downloading...");
             File.Delete(cachePath);
         }
         
         Directory.CreateDirectory(cacheDir);
-        var configPath = PathHelper.GetPath(_rootPath, "etc/aurora/repolist");
-        var repos = RepoConfigParser.Parse(File.ReadAllText(configPath));
+
+        var reposDir = PathHelper.GetPath(_rootPath, "etc/yum.repos.d");
+        
+        // FIX: Check Directory.Exists instead of File.Exists for a directory
+        if (!Directory.Exists(reposDir)) throw new Exception("No repolist directory found.");
+        
+        var repos = RepoConfigParser.ParseDirectory(reposDir);
         
         foreach (var repo in repos.Values.Where(r => r.Enabled))
         {
             try
             {
-                // DOWNLOAD FIX: Pass the raw filename with colons to FetchFile
-                await FetchFile(repo.Url, filename, cachePath, onProgress);
+                // Fetch using the exact relative path from the repository root
+                await FetchFile(repo.Url, pkg.LocationHref, cachePath, onProgress);
 
+                // Verify SHA256 integrity after download
                 if (!string.IsNullOrEmpty(pkg.Checksum))
                 {
-                    if (!string.Equals(HashHelper.ComputeFileHash(cachePath), pkg.Checksum, StringComparison.OrdinalIgnoreCase))
+                    var actualSum = HashHelper.ComputeFileHash(cachePath);
+                    if (!string.Equals(actualSum, pkg.Checksum, StringComparison.OrdinalIgnoreCase))
                     {
                         File.Delete(cachePath);
-                        throw new InvalidDataException("Integrity mismatch.");
+                        throw new InvalidDataException($"Integrity check failed: SHA256 mismatch for {filename}.");
                     }
                 }
+                
                 return cachePath;
             }
-            catch { /* Try next mirror */ }
+            catch (Exception ex)
+            {
+                AuLogger.Debug($"Mirror {repo.Name} failed for {filename}: {ex.Message}");
+                // Fallthrough to try the next mirror
+            }
         }
+
         return null;
     }
 
-    private async Task FetchFile(string baseUrl, string filename, string destination, Action<long?, long>? onProgress = null)
+    private async Task FetchFile(string baseUrl, string relativePath, string destination, Action<long?, long>? onProgress = null)
     {
         var baseUriString = baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/";
-        var escapedFilename = filename.Replace(":", "%3A");
-        var fullUri = new Uri(baseUriString + escapedFilename);
-
-        // --- DEBUG LOGGING ---
-        AuLogger.Debug($"[Network] Requesting: {fullUri}");
-        // ---------------------
+        var baseUri = new Uri(baseUriString);
+        
+        // Let Uri combine the base URL and the relative path (LocationHref)
+        var fullUri = new Uri(baseUri, relativePath);
 
         if (fullUri.Scheme == "file")
         {
@@ -154,19 +209,14 @@ public class RepoManager
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, fullUri) { Version = HttpVersion.Version11 };
             using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            
-            if (!response.IsSuccessStatusCode)
-            {
-                // Log the failure details
-                AuLogger.Error($"[Network] 404 Fail. URL: {fullUri} | Status: {response.StatusCode}");
-                throw new Exception($"Mirror error: {(int)response.StatusCode} {response.ReasonPhrase} ({fullUri})");
-            }
+            response.EnsureSuccessStatusCode();
 
             var totalBytes = response.Content.Headers.ContentLength;
+            
             await using var downloadStream = await response.Content.ReadAsStreamAsync();
             await using var fileStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
 
-            var buffer = new byte[32768];
+            var buffer = new byte[32768]; // 32KB buffer for performance
             long totalDownloaded = 0;
             int bytesRead;
 
@@ -176,6 +226,46 @@ public class RepoManager
                 totalDownloaded += bytesRead;
                 onProgress?.Invoke(totalBytes, totalDownloaded);
             }
+        }
+    }
+
+    private async Task DecompressDatabaseAsync(string compressedFile, string outputFile)
+    {
+        var ext = Path.GetExtension(compressedFile).ToLowerInvariant();
+        ProcessStartInfo psi;
+
+        // Route decompression based on Fedora/RPM standards
+        if (ext == ".zst" || ext == ".zstd")
+        {
+            psi = new ProcessStartInfo("zstd", $"-d -q \"{compressedFile}\" -o \"{outputFile}\" -f");
+        }
+        else if (ext == ".gz")
+        {
+            psi = new ProcessStartInfo("/bin/sh", $"-c \"gzip -d -c '{compressedFile}' > '{outputFile}'\"");
+        }
+        else if (ext == ".bz2")
+        {
+            psi = new ProcessStartInfo("/bin/sh", $"-c \"bzip2 -d -c '{compressedFile}' > '{outputFile}'\"");
+        }
+        else
+        {
+            File.Copy(compressedFile, outputFile, true);
+            return;
+        }
+
+        psi.CreateNoWindow = true;
+        psi.UseShellExecute = false;
+        psi.RedirectStandardError = true;
+
+        using var proc = Process.Start(psi);
+        if (proc == null) throw new Exception("Failed to start decompression process.");
+
+        string error = await proc.StandardError.ReadToEndAsync();
+        await proc.WaitForExitAsync();
+
+        if (proc.ExitCode != 0)
+        {
+            throw new Exception($"Database decompression failed: {error}");
         }
     }
 }

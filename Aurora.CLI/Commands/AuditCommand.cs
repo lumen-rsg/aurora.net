@@ -1,5 +1,4 @@
-using Aurora.Core.Logic;
-using Aurora.Core.Models;
+using System.Diagnostics;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -7,83 +6,50 @@ namespace Aurora.CLI.Commands;
 public class AuditCommand : ICommand
 {
     public string Name => "audit";
-    public string Description => "Check system health";
+    public string Description => "Check system health and file integrity";
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
-        AnsiConsole.MarkupLine("[blue]Auditing system health...[/]");
-        using var tx = new Transaction(config.DbPath);
-        var brokenList = tx.GetBrokenPackages();
+        AnsiConsole.MarkupLine("[blue]Verifying RPM database and file integrity...[/]");
+        AnsiConsole.MarkupLine("[grey]This may take a few minutes as it hashes every file on the system.[/]");
 
-        if (brokenList.Count == 0)
+        var psi = new ProcessStartInfo
         {
-            AnsiConsole.MarkupLine("[green]System is healthy.[/]");
-            return Task.CompletedTask;
+            FileName = "rpm",
+            Arguments = $"--root {config.SysRoot} -Va",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = Process.Start(psi);
+        if (process == null) return Task.CompletedTask;
+
+        bool foundIssues = false;
+
+        process.OutputDataReceived += (s, e) => 
+        { 
+            if (!string.IsNullOrWhiteSpace(e.Data)) 
+            {
+                foundIssues = true;
+                AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(e.Data)}[/]"); 
+            }
+        };
+
+        process.BeginOutputReadLine();
+        process.WaitForExit();
+
+        if (!foundIssues && process.ExitCode == 0)
+        {
+            AnsiConsole.MarkupLine("[green]✔ System is perfectly healthy.[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[red]Audit complete. Issues found above.[/]");
+            AnsiConsole.MarkupLine("[grey]Reference: S=Size, M=Mode, 5=MD5, D=Device, L=Symlink, U=User, G=Group, T=Mtime[/]");
         }
 
-        AnsiConsole.MarkupLine($"Found [red bold]{brokenList.Count}[/] broken packages.");
-        
-        var table = new Table().AddColumn("Package").AddColumn("Issues").AddColumn("Status");
-        int healedCount = 0;
-        
-        var allInstalled = tx.GetAllPackages();
-        var installedMap = allInstalled.ToDictionary(p => p.Name, p => p);
-
-        foreach (var pkg in brokenList)
-        {
-            var issues = new List<string>();
-
-            // 1. Check Missing Dependencies
-            foreach (var dep in pkg.Depends)
-            {
-                if (!installedMap.ContainsKey(dep))
-                {
-                    issues.Add($"Missing dep: {dep}");
-                }
-            }
-
-            // 2. Check Conflicts (Forward)
-            // Does this package declare a conflict with an installed package?
-            foreach (var c in pkg.Conflicts)
-            {
-                if (installedMap.ContainsKey(c))
-                {
-                    issues.Add($"Conflicts with {c}");
-                }
-            }
-
-            // 3. Check Conflicts (Reverse)
-            // Does an installed package declare a conflict with this one?
-            foreach (var other in allInstalled)
-            {
-                if (other.Name == pkg.Name) continue; // Skip self
-                if (other.Conflicts.Contains(pkg.Name))
-                {
-                    issues.Add($"Conflict from {other.Name}");
-                }
-            }
-
-            if (issues.Count == 0)
-            {
-                tx.MarkPackageHealthy(pkg.Name);
-                table.AddRow(pkg.Name, "[grey]None[/]", "[green bold]HEALED[/]");
-                healedCount++;
-            }
-            else
-            {
-                var issueText = string.Join(", ", issues);
-                table.AddRow(pkg.Name, $"[red]{issueText}[/]", "[red]STILL BROKEN[/]");
-            }
-        }
-
-        AnsiConsole.Write(table);
-        
-        if (healedCount > 0)
-        {
-            tx.Commit();
-            AnsiConsole.MarkupLine($"[green]Successfully healed {healedCount} packages.[/]");
-        }
-        
         return Task.CompletedTask;
     }
 }

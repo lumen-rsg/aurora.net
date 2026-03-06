@@ -1,9 +1,16 @@
-using System.Text;
+using System;
+using System.Collections.Generic;
 
 namespace Aurora.Core.Logic;
 
-public static class VersionComparer
+public class VersionComparer : IComparer<string>
 {
+    // Implementation of IComparer<string> for LINQ's OrderByDescending
+    int IComparer<string>.Compare(string? x, string? y)
+    {
+        return Compare(x ?? "", y ?? "");
+    }
+
     /// <summary>
     /// Returns true if 'candidateVer' is greater than 'currentVer'.
     /// Implements logic similar to rpmvercmp.
@@ -31,11 +38,7 @@ public static class VersionComparer
             while (i2 < len2 && !char.IsLetterOrDigit(v2[i2])) i2++;
 
             // 2. Check for end of strings
-            // If both ended at the same time, they are equal up to here
             if (i1 >= len1 && i2 >= len2) return 0;
-
-            // If one ended, the one remaining is usually "newer" (longer)
-            // e.g. 1.0 < 1.0.1
             if (i1 >= len1) return -1; // v1 ran out, v2 is longer/newer
             if (i2 >= len2) return 1;  // v2 ran out, v1 is longer/newer
 
@@ -54,7 +57,6 @@ public static class VersionComparer
                 else
                 {
                     // v1 is Number, v2 is Letter -> Number > Letter (RPM Rule)
-                    // e.g. 1.0 > 1.a
                     return 1;
                 }
             }
@@ -83,10 +85,7 @@ public static class VersionComparer
     private static string ExtractNumber(string s, ref int i)
     {
         int start = i;
-        // Eat all digits
         while (i < s.Length && char.IsDigit(s[i])) i++;
-        
-        // Return segment, trim leading zeros for accurate comparison (01 == 1)
         var num = s.Substring(start, i - start).TrimStart('0');
         return string.IsNullOrEmpty(num) ? "0" : num;
     }
@@ -94,18 +93,14 @@ public static class VersionComparer
     private static string ExtractAlpha(string s, ref int i)
     {
         int start = i;
-        // Eat all letters
         while (i < s.Length && char.IsLetter(s[i])) i++;
         return s.Substring(start, i - start);
     }
 
     private static int CompareNumeric(string n1, string n2)
     {
-        // First compare by length (longer string of digits is bigger number)
         if (n1.Length > n2.Length) return 1;
         if (n1.Length < n2.Length) return -1;
-        
-        // If lengths equal, compare lexically (which works for numbers of same length)
         return string.Compare(n1, n2, StringComparison.Ordinal);
     }
 }

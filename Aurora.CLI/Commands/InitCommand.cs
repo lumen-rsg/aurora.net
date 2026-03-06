@@ -1,5 +1,5 @@
+using System.Diagnostics;
 using Aurora.Core.IO;
-using Aurora.Core.Logic;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -7,19 +7,47 @@ namespace Aurora.CLI.Commands;
 public class InitCommand : ICommand
 {
     public string Name => "init";
-    public string Description => "Initialize Aurora root";
+    public string Description => "Initialize a new Aurora/RPM root environment";
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
-        var dirs = new[] { "var/lib/aurora", "var/cache/aurora", "usr/bin", "usr/lib", "etc" };
+        // Essential directories for RPM and Aurora
+        var dirs = new[] { 
+            "var/lib/rpm", 
+            "var/lib/aurora", 
+            "var/cache/aurora", 
+            "etc/yum.repos.d",
+            "usr/bin", 
+            "usr/lib" 
+        };
+
         foreach (var d in dirs)
         {
             Directory.CreateDirectory(PathHelper.GetPath(config.SysRoot, d));
         }
 
-        using var tx = new Transaction(config.DbPath);
-        tx.Commit();
-        AnsiConsole.MarkupLine($"[green]Initialized Aurora root at {config.SysRoot}[/]");
+        AnsiConsole.MarkupLine("[blue]Initializing RPM database...[/]");
+        var psi = new ProcessStartInfo
+        {
+            FileName = "rpm",
+            Arguments = $"--root {config.SysRoot} --initdb",
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var proc = Process.Start(psi);
+        proc?.WaitForExit();
+
+        if (proc?.ExitCode == 0)
+        {
+            AnsiConsole.MarkupLine($"[green]✔ Initialized Aurora root at {config.SysRoot}[/]");
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"[red]Failed to initialize RPM db:[/] {proc?.StandardError.ReadToEnd()}");
+        }
+
         return Task.CompletedTask;
     }
 }

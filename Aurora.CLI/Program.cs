@@ -2,16 +2,15 @@
 using Aurora.CLI.Commands;
 using Aurora.Core.IO;
 using Aurora.Core.Logging;
-using Aurora.Core.Logic;
 using Spectre.Console;
 
-class wProgram
+class Program
 {
     static async Task<int> Main(string[] args)
     {
         AuLogger.Initialize("aurora.log");
 
-        // 1. Production Command Registry
+        // 1. RPM-Native Command Registry
         var commands = new List<ICommand>
         {
             new InstallCommand(),
@@ -21,9 +20,7 @@ class wProgram
             new ListCommand(),
             new AuditCommand(),
             new RecoverCommand(),
-            new BuildCommand(),
-            new EditCommand(),
-            new ConvertCommand()
+            new InitCommand()
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);
@@ -34,7 +31,7 @@ class wProgram
         bool assumeYes = false;
         bool force = false;
         bool skipGpg = false;
-        bool skipDownload = false;
+        bool skipDownload = false; // Kept for interface compatibility, mostly unused now
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -58,46 +55,20 @@ class wProgram
 
         var config = new CliConfiguration(sysRoot, force, assumeYes, skipGpg, skipDownload);
         
-        // Ensure the internal state directory exists
+        // Ensure core directories exist
         try 
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(config.DbPath)!);
+            // Only create if we are bootstrapping or if they are missing
+            if (bootstrapPath != null) Directory.CreateDirectory(sysRoot);
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Fatal: Could not initialize system root at {sysRoot}[/]");
+            AnsiConsole.MarkupLine($"[red]Fatal: Could not access system root at {sysRoot}[/]");
             AuLogger.Error(ex.Message);
             return 1;
         }
 
-        // 4. Strict Recovery Check
-        if (Transaction.HasPendingRecovery(config.DbPath))
-        {
-            bool isRecoverCmd = commandArgs.Count > 0 && commandArgs[0] == "recover";
-            if (!assumeYes && !isRecoverCmd)
-            {
-                AnsiConsole.MarkupLine("[red bold]![/] [yellow]Previous transaction was interrupted abnormally.[/]");
-                if (Console.IsInputRedirected || !AnsiConsole.Confirm("Recover system state now?"))
-                {
-                     AnsiConsole.MarkupLine("[red]Cannot proceed with a dirty journal. Run 'au recover' manually.[/]");
-                     return 1;
-                }
-            }
-            
-            if (!isRecoverCmd) 
-            {
-                try { 
-                    Transaction.RunRecovery(config.DbPath); 
-                    AnsiConsole.MarkupLine("[green]System recovered.[/]"); 
-                }
-                catch (Exception ex) { 
-                    AnsiConsole.MarkupLine($"[red]Recovery failed:[/] {ex.Message}"); 
-                    return 1; 
-                }
-            }
-        }
-
-        // 5. Dispatch
+        // 4. Dispatch
         if (commandArgs.Count == 0)
         {
             PrintHelp(commands);
@@ -115,18 +86,10 @@ class wProgram
             catch (Exception ex)
             {
                 AnsiConsole.MarkupLine($"[red bold]FATAL ERROR:[/] {Markup.Escape(ex.Message)}");
-
-                // --- NEW: Detailed Exception Inspector ---
-                // This will tell us exactly WHICH class failed to initialize and WHY.
                 if (ex is TypeInitializationException tie && tie.InnerException != null)
                 {
-                    AnsiConsole.Write(new Rule("[yellow]Inner Exception Details[/]").RuleStyle("yellow"));
-                    AnsiConsole.MarkupLine($"[yellow]Type:[/] {tie.TypeName}");
-                    AnsiConsole.MarkupLine($"[red]Cause:[/] {Markup.Escape(tie.InnerException.Message)}");
-                    AnsiConsole.WriteException(tie.InnerException, ExceptionFormats.ShortenPaths);
+                    AnsiConsole.WriteException(tie.InnerException);
                 }
-                // ------------------------------------------
-
                 return 1;
             }
         }
@@ -139,10 +102,10 @@ class wProgram
 
     static void PrintHelp(List<ICommand> commands)
     {
-        AnsiConsole.Write(new FigletText("AURORA").Color(Color.Cyan1));
+        AnsiConsole.Write(new FigletText("aurora").Color(Color.Cyan1));
         var table = new Table().Border(TableBorder.Rounded).AddColumn("Command").AddColumn("Description");
         foreach (var c in commands) table.AddRow($"[yellow]{c.Name}[/]", c.Description);
         AnsiConsole.Write(table);
-        AnsiConsole.MarkupLine("[grey]Flags: --bootstrap <path>, --force, --yes[/]");
+        AnsiConsole.MarkupLine("[grey]Flags: --bootstrap <path>, --force, --yes, --skip-gpg[/]");
     }
 }

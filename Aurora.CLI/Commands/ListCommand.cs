@@ -10,18 +10,18 @@ public class ListCommand : ICommand
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
-        using var db = new PackageDatabase(config.DbPath);
-        var packages = db.GetAllPackages();
+        var packages = RpmLocalDb.GetInstalledPackages(config.SysRoot);
 
         AnsiConsole.MarkupLine($"[bold]Root:[/] {config.SysRoot}");
         AnsiConsole.MarkupLine($"[bold]Installed Packages ({packages.Count}):[/]");
 
         var table = new Table().AddColumn("Name").AddColumn("Version").AddColumn("Arch");
-        foreach (var p in packages)
+        foreach (var p in packages.OrderBy(p => p.Name))
         {
-            table.AddRow(p.Name, p.Version, p.Arch);
+            table.AddRow(p.Name, p.FullVersion, p.Arch);
         }
         AnsiConsole.Write(table);
+        
         return Task.CompletedTask;
     }
 }

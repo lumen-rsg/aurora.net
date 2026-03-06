@@ -1,7 +1,5 @@
-using Aurora.Core.IO;
-using Aurora.Core.Logic;
-using Aurora.Core.Logic.Hooks;
-using Aurora.Core.Models;
+using System.Diagnostics;
+using Aurora.Core.State;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -9,114 +7,67 @@ namespace Aurora.CLI.Commands;
 public class RemoveCommand : ICommand
 {
     public string Name => "remove";
-    public string Description => "Remove a package and its files";
+    public string Description => "Remove packages";
 
-    public async Task ExecuteAsync(CliConfiguration config, string[] args)
+    public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
-        if (args.Length < 1) throw new ArgumentException("Usage: remove <package>");
-        string pkgName = args[0];
+        if (args.Length < 1) throw new ArgumentException("Usage: remove <pkg1> [pkg2] ...");
 
-        // 1. Open Transaction
-        using var tx = new Transaction(config.DbPath);
-        
-        try
+        var toRemove = new List<string>();
+
+        // Validate installation
+        foreach (var pkg in args)
         {
-            // 2. Lookup Package
-            var pkg = tx.GetPackage(pkgName);
-
-            if (pkg == null)
+            if (!RpmLocalDb.IsInstalled(pkg, config.SysRoot))
             {
-                AnsiConsole.MarkupLine($"[red]Error:[/] Package [bold]{pkgName}[/] is not installed.");
-                return;
+                AnsiConsole.MarkupLine($"[yellow]Warning:[/] Package [bold]{pkg}[/] is not installed.");
             }
-
-            // 3. User Confirmation
-            var table = new Table().Border(TableBorder.Rounded);
-            table.AddColumn("Removing");
-            table.AddColumn("Version");
-            table.AddRow($"[red]{pkg.Name}[/]", pkg.Version);
-            AnsiConsole.Write(table);
-
-            if (!config.AssumeYes && !AnsiConsole.Confirm($"Are you sure you want to remove [bold]{pkgName}[/]?")) 
+            else
             {
-                AnsiConsole.MarkupLine("[yellow]Operation cancelled.[/]");
-                return; 
+                toRemove.Add(pkg);
             }
-
-            // 4. Init Hooks
-            var hookEngine = new HookEngine(config.SysRoot);
-            var targetList = new List<Package> { pkg };
-
-            // 5. Pre-Transaction Hooks
-            AnsiConsole.Write(new Rule("[grey]Pre-Remove Hooks[/]").RuleStyle("grey"));
-            await hookEngine.RunHooksAsync(HookWhen.PreTransaction, targetList, TriggerOperation.Remove);
-
-            // 6. Legacy Script Support (Pre-Remove)
-            // Look for saved install scripts (e.g. /var/lib/aurora/scripts/pkgname.sh)
-            var scriptPath = Path.Combine(config.ScriptDir, $"{pkgName}.sh");
-            bool hasScript = File.Exists(scriptPath);
-
-            if (hasScript)
-            {
-                // pre_remove receives the version being removed as $1
-                ScriptRunner.RunScript(scriptPath, "pre_remove", config.SysRoot, pkg.Version);
-            }
-
-            // 7. Physical Removal
-            AnsiConsole.Status().Start($"Removing {pkgName}...", ctx =>
-            {
-                // Delete files listed in the database
-                foreach (var manifestPath in pkg.Files)
-                {
-                    var physicalPath = PathHelper.GetPath(config.SysRoot, manifestPath);
-                    
-                    if (File.Exists(physicalPath))
-                    {
-                        File.Delete(physicalPath);
-                        
-                        // Clean up empty parent directories recursively up to root
-                        // (Simplified here to just immediate parent to avoid destroying system dirs)
-                        var dir = Path.GetDirectoryName(physicalPath);
-                        if (dir != null && Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
-                        {
-                            try { Directory.Delete(dir); } catch { }
-                        }
-                    }
-                    else if (Directory.Exists(physicalPath))
-                    {
-                        // If it's a directory owned by the package, remove if empty
-                        if (!Directory.EnumerateFileSystemEntries(physicalPath).Any())
-                            try { Directory.Delete(physicalPath); } catch { }
-                    }
-                }
-                
-                // Remove from DB
-                tx.RemovePackage(pkgName);
-            });
-
-            // 8. Legacy Script Support (Post-Remove)
-            if (hasScript)
-            {
-                // post_remove receives the version being removed as $1
-                ScriptRunner.RunScript(scriptPath, "post_remove", config.SysRoot, pkg.Version);
-                
-                // Cleanup the script itself
-                try { File.Delete(scriptPath); } catch { }
-            }
-
-            // 9. Commit
-            tx.Commit();
-
-            // 10. Post-Transaction Hooks
-            AnsiConsole.Write(new Rule("[grey]Post-Remove Hooks[/]").RuleStyle("grey"));
-            await hookEngine.RunHooksAsync(HookWhen.PostTransaction, targetList, TriggerOperation.Remove);
-
-            AnsiConsole.MarkupLine($"[green]✔ Successfully removed {pkgName}.[/]");
         }
-        catch (Exception ex)
+
+        if (toRemove.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[red bold]Removal Failed:[/] {Markup.Escape(ex.Message)}");
-            // Transaction auto-rollback handles DB consistency
+            AnsiConsole.MarkupLine("[green]Nothing to remove.[/]");
+            return Task.CompletedTask;
         }
+
+        // Confirm
+        AnsiConsole.Write(new Rule("[red]Package Removal[/]").RuleStyle("grey"));
+        var table = new Table().Border(TableBorder.Rounded).AddColumn("Target");
+        foreach(var p in toRemove) table.AddRow($"[red bold]{p}[/]");
+        AnsiConsole.Write(table);
+
+        if (!config.AssumeYes && !AnsiConsole.Confirm($"Remove {toRemove.Count} packages?")) 
+            return Task.CompletedTask;
+
+        // Execute
+        var targets = string.Join(" ", toRemove);
+        var psi = new ProcessStartInfo
+        {
+            FileName = "rpm",
+            Arguments = $"--root {config.SysRoot} -evh {targets}",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        AnsiConsole.MarkupLine("[blue]Executing transaction...[/]");
+
+        using var process = Process.Start(psi);
+        if (process == null) return Task.CompletedTask;
+
+        process.OutputDataReceived += (s, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) AnsiConsole.MarkupLine($"[grey]{Markup.Escape(e.Data)}[/]"); };
+        process.ErrorDataReceived += (s, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(e.Data)}[/]"); };
+
+        process.WaitForExit();
+
+        if (process.ExitCode == 0) AnsiConsole.MarkupLine($"[green bold]✔ Successfully removed packages.[/]");
+        else AnsiConsole.MarkupLine($"[red bold]Removal failed (Exit Code {process.ExitCode}).[/]");
+
+        return Task.CompletedTask;
     }
 }
