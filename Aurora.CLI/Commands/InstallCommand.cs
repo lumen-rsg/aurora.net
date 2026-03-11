@@ -65,6 +65,7 @@ public class InstallCommand : ICommand
             return;
         }
 
+        int loadedCount = 0;
         await AnsiConsole.Status().StartAsync("Reading repositories...", async ctx =>
         {
             foreach (var dbFile in repoFiles)
@@ -72,11 +73,18 @@ public class InstallCommand : ICommand
                 try
                 {
                     using var db = new RpmRepoDb(dbFile);
-                    availablePackages.AddRange(db.GetAllPackages());
+                    var pkgs = db.GetAllPackages();
+                    availablePackages.AddRange(pkgs);
+                    loadedCount += pkgs.Count;
                 }
-                catch (Exception ex) { /* Log warning */ }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"[red]Error reading {Path.GetFileName(dbFile)}:[/] {ex.Message}");
+                }
             }
         });
+
+        AnsiConsole.MarkupLine($"[grey]Loaded {loadedCount} packages from {repoFiles.Length} repositories.[/]");
 
         // 2. Resolve Dependencies (Pass the list!)
         List<Package> plan;
