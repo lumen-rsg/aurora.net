@@ -20,7 +20,8 @@ class Program
             new ListCommand(),
             new AuditCommand(),
             new RecoverCommand(),
-            new InitCommand()
+            new InitCommand(),
+            new InfoCommand(),
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);
