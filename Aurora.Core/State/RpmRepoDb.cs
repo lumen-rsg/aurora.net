@@ -1,84 +1,82 @@
 using Microsoft.Data.Sqlite;
 using Aurora.Core.Models;
-using System;
-using System.Collections.Generic;
-using System.IO;
+using System.Runtime.InteropServices;
 
 namespace Aurora.Core.State;
 
 public class RpmRepoDb : IDisposable
 {
     private readonly SqliteConnection _connection;
-
-    static RpmRepoDb()
-    {
-        try 
-        {
-            // This forces the load of the native sqlite library 
-            // before any instance is created.
-            SQLitePCL.Batteries_V2.Init();
-        }
-        catch { /* If this fails, the instance constructor will report it */ }
-    }
+    private readonly string _hostArch;
 
     public RpmRepoDb(string sqliteFilePath)
     {
         if (!File.Exists(sqliteFilePath)) throw new FileNotFoundException("Repo DB not found", sqliteFilePath);
         
-        // Mode=ReadOnly is essential for shared access to repo files
         _connection = new SqliteConnection($"Data Source={sqliteFilePath};Mode=ReadOnly;");
         _connection.Open();
+
+        // Determine host architecture for filtering
+        _hostArch = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X64 => "x86_64",
+            Architecture.Arm64 => "aarch64",
+            _ => "x86_64"
+        };
     }
 
     public List<Package> GetAllPackages()
     {
-        var packages = new Dictionary<string, Package>();
+        // pkgKey is the primary link between tables. Using long to prevent overflow.
+        var packages = new Dictionary<long, Package>();
 
-        // 1. Fetch Core Package Data
+        // 1. Fetch Core Package Data (Filtered by Architecture)
+        // We only want packages for our arch or architecture-independent (noarch)
         using (var cmd = _connection.CreateCommand())
         {
             cmd.CommandText = @"
                 SELECT pkgKey, name, epoch, version, release, arch, 
                        summary, description, url, rpm_license, 
                        location_href, pkgId, size_package, size_installed
-                FROM packages";
+                FROM packages 
+                WHERE arch = $arch OR arch = 'noarch'";
+            
+            cmd.Parameters.AddWithValue("$arch", _hostArch);
             
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var pkgKey = reader.GetInt32(0).ToString();
+                var pkgKey = reader.GetInt64(0);
                 
-                // NULL-Safe data retrieval
                 packages[pkgKey] = new Package
                 {
-                    Name = reader.GetString(1),
-                    // Epoch is frequently NULL in RPM databases
+                    Name = GetStringSafe(reader, 1),
                     Epoch = reader.IsDBNull(2) ? "0" : reader.GetValue(2).ToString() ?? "0",
-                    Version = reader.GetString(3),
-                    Release = reader.GetString(4),
-                    Arch = reader.GetString(5),
-                    Summary = reader.IsDBNull(6) ? "" : reader.GetString(6),
-                    Description = reader.IsDBNull(7) ? "" : reader.GetString(7),
-                    Url = reader.IsDBNull(8) ? "" : reader.GetString(8),
-                    License = reader.IsDBNull(9) ? "" : reader.GetString(9),
-                    LocationHref = reader.GetString(10),
-                    Checksum = reader.GetString(11), // pkgId is the sha256
+                    Version = GetStringSafe(reader, 3),
+                    Release = GetStringSafe(reader, 4),
+                    Arch = GetStringSafe(reader, 5),
+                    Summary = GetStringSafe(reader, 6),
+                    Description = GetStringSafe(reader, 7),
+                    Url = GetStringSafe(reader, 8),
+                    License = GetStringSafe(reader, 9),
+                    LocationHref = GetStringSafe(reader, 10),
+                    Checksum = GetStringSafe(reader, 11),
                     Size = reader.GetInt64(12),
                     InstalledSize = reader.GetInt64(13)
                 };
             }
         }
 
-        // 2. Fetch Provides
+        // 2. Fetch Provides (Capabilities)
         using (var cmd = _connection.CreateCommand())
         {
             cmd.CommandText = "SELECT pkgKey, name FROM provides";
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var key = reader.GetInt32(0).ToString();
-                if (packages.TryGetValue(key, out var pkg))
+                if (packages.TryGetValue(reader.GetInt64(0), out var pkg))
                 {
+                    // This captures 'libtinfo.so.6()(64bit)' exactly as requested by bash
                     pkg.Provides.Add(reader.GetString(1)); 
                 }
             }
@@ -87,13 +85,12 @@ public class RpmRepoDb : IDisposable
         // 3. Fetch Requires
         using (var cmd = _connection.CreateCommand())
         {
-            // We ignore internal rpmlib requirements for the solver
+            // Filter out internal RPM capabilities that Aurora doesn't need to resolve
             cmd.CommandText = "SELECT pkgKey, name FROM requires WHERE name NOT LIKE 'rpmlib(%'";
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var key = reader.GetInt32(0).ToString();
-                if (packages.TryGetValue(key, out var pkg))
+                if (packages.TryGetValue(reader.GetInt64(0), out var pkg))
                 {
                     pkg.Requires.Add(reader.GetString(1));
                 }
@@ -101,6 +98,12 @@ public class RpmRepoDb : IDisposable
         }
 
         return new List<Package>(packages.Values);
+    }
+
+    private string GetStringSafe(SqliteDataReader reader, int col)
+    {
+        if (reader.IsDBNull(col)) return string.Empty;
+        return reader.GetValue(col).ToString() ?? string.Empty;
     }
 
     public void Dispose()

@@ -21,13 +21,16 @@ public class DependencySolver
         // 1. Build the capability map
         foreach (var pkg in availablePackages)
         {
-            // A package always implicitly provides its own name
+            // Heuristic: Every package provides its own Name
             AddProvider(pkg.Name, pkg, pkg.Name);
 
-            // Add explicit provides (virtual capabilities)
+            // Add all versioned/virtual provides from the DB
             foreach (var prov in pkg.Provides)
             {
-                var provName = new RpmRequirement(prov).Name;
+                // We split to get just the name for the dictionary key
+                // e.g. "libtinfo.so.6()(64bit)" stays as is.
+                // e.g. "config(bash) = 5.2" becomes "config(bash)"
+                var provName = prov.Split(' ')[0]; 
                 AddProvider(provName, pkg, prov);
             }
         }
