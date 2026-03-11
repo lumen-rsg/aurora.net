@@ -11,14 +11,17 @@ public class InitCommand : ICommand
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
-        // Essential directories for RPM and Aurora
+        // Create the essential modern filesystem skeleton
         var dirs = new[] { 
-            "var/lib/rpm", 
-            "var/lib/aurora", 
-            "var/cache/aurora", 
-            "etc/yum.repos.d",
+            "usr/lib/sysimage/rpm", // Modern RPM DB path (Fedora 36+)
+            "var/lib/rpm",          // Legacy RPM DB path
+            "var/lib/aurora",       // Aurora metadata
+            "var/cache/aurora",     // Aurora package cache
+            "etc/yum.repos.d",      // Repository configs
             "usr/bin", 
-            "usr/lib" 
+            "usr/lib",
+            "var/tmp",              // Required by RPM for Lua/transaction locks
+            "tmp"                   // Required by some %pre/%post scripts
         };
 
         foreach (var d in dirs)
