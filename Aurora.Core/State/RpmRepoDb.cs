@@ -10,11 +10,22 @@ public class RpmRepoDb : IDisposable
 {
     private readonly SqliteConnection _connection;
 
+    static RpmRepoDb()
+    {
+        try 
+        {
+            // This forces the load of the native sqlite library 
+            // before any instance is created.
+            SQLitePCL.Batteries_V2.Init();
+        }
+        catch { /* If this fails, the instance constructor will report it */ }
+    }
+
     public RpmRepoDb(string sqliteFilePath)
     {
         if (!File.Exists(sqliteFilePath)) throw new FileNotFoundException("Repo DB not found", sqliteFilePath);
         
-        // Ensure shared cache/read-only mode for speed
+        // Mode=ReadOnly is essential for shared access to repo files
         _connection = new SqliteConnection($"Data Source={sqliteFilePath};Mode=ReadOnly;");
         _connection.Open();
     }

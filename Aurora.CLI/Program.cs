@@ -85,11 +85,23 @@ class Program
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red bold]FATAL ERROR:[/] {Markup.Escape(ex.Message)}");
-                if (ex is TypeInitializationException tie && tie.InnerException != null)
+                AnsiConsole.Write(new Rule("[red]FATAL ERROR[/]").RuleStyle("red"));
+            
+                // Unroll the exception to find the root cause
+                Exception? current = ex;
+                while (current != null)
                 {
-                    AnsiConsole.WriteException(tie.InnerException);
+                    AnsiConsole.MarkupLine($"[bold red]Error Type:[/] {current.GetType().Name}");
+                    AnsiConsole.MarkupLine($"[bold red]Message:[/] {Markup.Escape(current.Message)}");
+                
+                    if (current is System.Reflection.TargetInvocationException tie) current = tie.InnerException;
+                    else if (current is TypeInitializationException tie2) current = tie2.InnerException;
+                    else break;
+
+                    if (current != null) AnsiConsole.MarkupLine("[grey]Caused by...[/]");
                 }
+
+                AnsiConsole.WriteException(ex, ExceptionFormats.ShortenEverything);
                 return 1;
             }
         }
