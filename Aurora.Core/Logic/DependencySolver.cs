@@ -67,61 +67,57 @@ public class DependencySolver
         var queue = new Queue<string>();
         var processedReqs = new HashSet<string>();
 
-        // 1. Enqueue all user-requested targets as root nodes
-        foreach (var t in targets)
-        {
-            queue.Enqueue(t);
-        }
+        foreach (var t in targets) queue.Enqueue(t);
 
-        // 2. Process the queue (BFS)
         while (queue.Count > 0)
         {
             string currentReqStr = queue.Dequeue();
-            
-            // Optimization: Skip if we already checked this exact capability string
             if (!processedReqs.Add(currentReqStr)) continue;
 
             var req = new RpmRequirement(currentReqStr);
 
-            // A. Check if satisfied by INSTALLED packages
             if (IsSatisfiedByList(req, _installedPackages)) continue;
-
-            // B. Check if satisfied by packages already in the PLAN
             if (IsSatisfiedByList(req, plan)) continue;
 
-            // C. Find candidates in the REPOSITORY
             if (!_providersMap.TryGetValue(req.Name, out var candidates))
             {
-                // In a real manager, we might check file provides (e.g. /usr/bin/bash) here.
-                // For now, strict capability matching.
-                throw new Exception($"Unresolvable dependency: '{currentReqStr}'. No package provides '{req.Name}'.");
+                // --- FUZZY SUGGESTION LOGIC ---
+                var suggestions = _providersMap.Keys
+                    .Select(k => new { Name = k, Distance = FuzzyMatcher.LevenshteinDistance(req.Name, k) })
+                    .OrderBy(x => x.Distance)
+                    .Take(5)
+                    .ToList();
+
+                var msg = $"Unresolvable dependency: '{currentReqStr}'. No package provides '{req.Name}'.";
+                if (suggestions.Any())
+                {
+                    msg += "\nDid you mean one of these?";
+                    foreach (var s in suggestions) msg += $"\n  - {s.Name} (dist: {s.Distance})";
+                }
+                
+                throw new Exception(msg);
             }
 
-            // D. Filter candidates that satisfy specific version constraints (if any)
             var validCandidates = candidates.Where(c => req.IsSatisfiedBy(c.Pkg, c.ProvString)).ToList();
 
             if (validCandidates.Count == 0)
             {
-                throw new Exception($"Version conflict: Found packages providing '{req.Name}', but none satisfy '{currentReqStr}'.");
+                // If we found the provider name but versions mismatched
+                var versions = string.Join(", ", candidates.Select(c => c.Pkg.Version));
+                throw new Exception($"Version conflict: '{currentReqStr}' requested, but providers only offer versions: {versions}");
             }
 
-            // E. Selection Heuristic: Pick the best candidate
             var chosenPkg = PickBestCandidate(req.Name, validCandidates);
-
-            // F. Add to plan and enqueue its dependencies
             if (plan.Add(chosenPkg))
             {
                 foreach (var childReq in chosenPkg.Requires)
                 {
-                    // Ignore internal RPM namespace requirements (rpmlib)
                     if (childReq.StartsWith("rpmlib(")) continue;
-                    
                     queue.Enqueue(childReq);
                 }
             }
         }
 
-        // 3. Sort the final plan so dependencies install before the apps that need them
         return TopologicalSort(plan);
     }
 
