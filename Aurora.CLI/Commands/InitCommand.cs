@@ -11,90 +11,88 @@ public class InitCommand : ICommand
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
-        AnsiConsole.MarkupLine($"[blue]Initializing Root at:[/] {config.SysRoot}");
+        // 1. Ensure we have the absolute host path for the SysRoot
+        string absoluteRoot = Path.GetFullPath(config.SysRoot);
+        AnsiConsole.MarkupLine($"[blue]Initializing Root at:[/] {absoluteRoot}");
 
-        // 1. Create a comprehensive skeleton. 
-        // RPM needs more than just the DB dir to handle locks and lua scripts.
+        // 2. Create the exact modern Fedora skeleton
+        // We include /run and /var/lock to satisfy RPM's locking sub-systems
         var dirs = new[] { 
-            "usr/lib/sysimage/rpm", 
-            "var/lib/rpm",          
-            "var/cache/aurora",     
-            "var/lib/aurora",
-            "etc/rpm",              // Needed for per-root macros
+            "usr/lib/sysimage/rpm",
             "etc/yum.repos.d",
-            "var/tmp",              
+            "var/lib/aurora",
+            "var/cache/aurora",
+            "var/tmp",
             "tmp",
-            "var/lock/rpm",         // CRITICAL: Modern RPM lock location
-            "run/lock"
+            "run/lock/rpm"
         };
 
         foreach (var d in dirs)
         {
-            string fullPath = PathHelper.GetPath(config.SysRoot, d);
-            Directory.CreateDirectory(fullPath);
+            Directory.CreateDirectory(Path.Combine(absoluteRoot, d));
         }
 
-        // 2. Symlink var/lib/rpm to usr/lib/sysimage/rpm (The Fedora Standard)
-        // We do this BEFORE initdb so RPM can resolve it either way.
-        string legacyDbPath = PathHelper.GetPath(config.SysRoot, "var/lib/rpm");
-        if (Directory.Exists(legacyDbPath))
+        // 3. Create the legacy symlink
+        // var/lib/rpm -> ../../usr/lib/sysimage/rpm
+        string legacyLink = Path.Combine(absoluteRoot, "var/lib/rpm");
+        if (!Directory.Exists(legacyLink) && !File.Exists(legacyLink))
         {
-            try { Directory.Delete(legacyDbPath); } catch { }
+            Directory.CreateDirectory(Path.GetDirectoryName(legacyLink)!);
+            File.CreateSymbolicLink(legacyLink, "../../usr/lib/sysimage/rpm");
         }
 
-        try 
-        {
-            // Use relative symlink: var/lib/rpm -> ../../usr/lib/sysimage/rpm
-            File.CreateSymbolicLink(legacyDbPath, "../../usr/lib/sysimage/rpm");
-            AnsiConsole.MarkupLine("[grey]Created legacy symlink compatibility...[/]");
-        }
-        catch { /* Fallback if symlink fails */ }
+        // 4. Initialize RPM DB using Absolute Host Paths
+        // By using --dbpath [ABSOLUTE_HOST_PATH], we bypass the internal '--root' logic
+        // which often fails to create locks on blank directories.
+        string absoluteHostDbPath = Path.Combine(absoluteRoot, "usr/lib/sysimage/rpm");
 
-        // 3. Initialize the database
-        AnsiConsole.MarkupLine("[blue]Initializing RPM database...[/]");
+        AnsiConsole.MarkupLine("[blue]Initializing RPM database (Direct Path)...[/]");
         
-        // We REMOVE the manual --define for _dbpath. 
-        // By providing both directories and the symlink, we let the host's RPM
-        // find the path naturally via the --root flag.
         var psi = new ProcessStartInfo
         {
             FileName = "rpm",
-            Arguments = $"--root \"{config.SysRoot}\" --initdb",
+            // We force the sqlite backend and point directly to the host path
+            Arguments = $"--define \"_db_backend sqlite\" --dbpath \"{absoluteHostDbPath}\" --initdb",
             RedirectStandardError = true,
             RedirectStandardOutput = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
 
-        // Ensure we don't inherit environment variables that point to the host's DB
+        // Clean the environment to prevent host-specific RPM macros from interfering
         psi.EnvironmentVariables.Remove("RPM_CONFIGDIR");
+        psi.EnvironmentVariables.Remove("RPM_ETCCONFIGDIR");
 
         using var proc = Process.Start(psi);
         if (proc == null) return Task.CompletedTask;
 
         var err = proc.StandardError.ReadToEnd();
+        var outMsg = proc.StandardOutput.ReadToEnd();
         proc.WaitForExit();
 
         if (proc.ExitCode == 0)
         {
-            // Verify if the file was actually created
-            string dbFile = Path.Combine(config.SysRoot, "usr/lib/sysimage/rpm/rpmdb.sqlite");
+            // Success check
+            string dbFile = Path.Combine(absoluteHostDbPath, "rpmdb.sqlite");
             if (File.Exists(dbFile))
-                AnsiConsole.MarkupLine($"[green bold]✔ RPM database created at {dbFile}[/]");
+            {
+                AnsiConsole.MarkupLine($"[green bold]✔ RPM SQLite database created successfully.[/]");
+            }
             else
-                AnsiConsole.MarkupLine("[yellow]! RPM reported success, but no sqlite file found in /usr/lib. Check /var/lib.[/]");
-
-            AnsiConsole.MarkupLine($"[green bold]✔ Aurora root initialized.[/]");
+            {
+                AnsiConsole.MarkupLine("[yellow]! RPM reported success, but rpmdb.sqlite is missing. Check /var/lib/rpm.[/]");
+            }
+            
+            AnsiConsole.MarkupLine($"[green bold]✔ Aurora root ready.[/]");
         }
         else
         {
             AnsiConsole.MarkupLine($"[red]Failed to initialize RPM db (Exit Code {proc.ExitCode}):[/]");
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(err)}[/]");
             
-            // Helpful hint for Fedora 43 users
-            if (err.Contains("lock"))
+            if (err.Contains("lock") && OperatingSystem.IsLinux())
             {
-                AnsiConsole.MarkupLine("[yellow]Hint:[/] RPM is having trouble with its lock file. Try running 'sudo rm -rf' on the target and starting fresh.");
+                AnsiConsole.MarkupLine("[yellow]SELinux Hint:[/] If you are on Fedora host, run: [blue]sudo setenforce 0[/] and try again.");
             }
         }
 
