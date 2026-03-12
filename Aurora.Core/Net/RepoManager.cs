@@ -126,7 +126,7 @@ public class RepoManager
         }
     }
 
-    public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Action<long?, long> onProgress)
+public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Action<long?, long> onProgress)
     {
         if (string.IsNullOrEmpty(pkg.LocationHref)) throw new ArgumentException($"Package {pkg.Name} lacks a LocationHref.");
 
@@ -154,9 +154,6 @@ public class RepoManager
         {
             try
             {
-                // DEBUG: Print the attempt
-                AnsiConsole.MarkupLine($"[grey]Trying {repo.Name} for {pkg.Name}...[/]");
-                
                 await FetchFile(repo.Url, pkg.LocationHref, cachePath, onProgress);
 
                 if (!string.IsNullOrEmpty(pkg.Checksum))
@@ -172,12 +169,14 @@ public class RepoManager
             }
             catch (HttpRequestException)
             {
-                // Standard 404, package not in this specific repo. Move to next.
+                // Normal 404 from this specific repo. Move to next.
                 if (File.Exists(cachePath)) File.Delete(cachePath);
             }
             catch (Exception ex)
             {
-                AuLogger.Debug($"Mirror {repo.Name} failed for {filename}: {ex.Message}");
+                // CRITICAL FIX: We must see this error if it's NOT a simple 404
+                // It could be a UriFormatException or DNS failure.
+                Spectre.Console.AnsiConsole.MarkupLine($"[yellow]DEBUG Error for {pkg.Name} on {repo.Name}: {ex.Message}[/]");
                 if (File.Exists(cachePath)) File.Delete(cachePath);
             }
         }
@@ -187,35 +186,54 @@ public class RepoManager
 
     private async Task FetchFile(string baseUrl, string relativePath, string destination, Action<long?, long>? onProgress = null)
     {
-        var baseUriString = baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/";
-        var baseUri = new Uri(baseUriString);
-        var escapedFilename = relativePath.Replace(":", "%3A"); // Handle epochs
-        var fullUri = new Uri(baseUri, escapedFilename);
-
-        // --- CRITICAL DEBUG LINE ---
-        // Uncomment this if the next run still fails, it will print the exact URL
-        AuLogger.Info($"Fetching: {fullUri.AbsoluteUri}");
-
-        using var request = new HttpRequestMessage(HttpMethod.Get, fullUri) { Version = HttpVersion.Version11 };
-        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        // 1. Manually concatenate strings to avoid .NET's strict Uri(Uri, string) constructor rules
+        string separator = baseUrl.EndsWith("/") ? "" : "/";
         
-        response.EnsureSuccessStatusCode(); // Throws on 404
-
-        var totalBytes = response.Content.Headers.ContentLength;
-        await using var downloadStream = await response.Content.ReadAsStreamAsync();
+        // Ensure relative path doesn't have a leading slash which would reset the base URL
+        string safeRelative = relativePath.TrimStart('/'); 
         
-        // Open file ONLY if we got a 200 OK
-        await using var fileStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
+        // Escape colons (Epochs) and Spaces
+        safeRelative = safeRelative.Replace(":", "%3A").Replace(" ", "%20");
+        
+        string fullUrlString = baseUrl + separator + safeRelative;
 
-        var buffer = new byte[32768];
-        long totalDownloaded = 0;
-        int bytesRead;
+        // Specter output for Debugging
+        Spectre.Console.AnsiConsole.MarkupLine($"[grey]Network Request: {fullUrlString}[/]");
 
-        while ((bytesRead = await downloadStream.ReadAsync(buffer)) != 0)
+        var fullUri = new Uri(fullUrlString);
+
+        if (fullUri.Scheme == "file")
         {
-            await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
-            totalDownloaded += bytesRead;
-            onProgress?.Invoke(totalBytes, totalDownloaded);
+            var sourcePath = fullUri.LocalPath;
+            if (!File.Exists(sourcePath)) throw new FileNotFoundException($"Local file mirror not found: {sourcePath}");
+            File.Copy(sourcePath, destination, overwrite: true);
+            var info = new FileInfo(sourcePath);
+            onProgress?.Invoke(info.Length, info.Length);
+        }
+        else
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, fullUri) { Version = HttpVersion.Version11 };
+            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            
+            // If it's a 404, this throws HttpRequestException which is gracefully caught by the outer loop
+            response.EnsureSuccessStatusCode(); 
+
+            var totalBytes = response.Content.Headers.ContentLength;
+            await using var downloadStream = await response.Content.ReadAsStreamAsync();
+            
+            // Open the file ONLY after we confirm a 200 OK
+            await using var fileStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
+
+            var buffer = new byte[32768];
+            long totalDownloaded = 0;
+            int bytesRead;
+
+            while ((bytesRead = await downloadStream.ReadAsync(buffer)) != 0)
+            {
+                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
+                totalDownloaded += bytesRead;
+                onProgress?.Invoke(totalBytes, totalDownloaded);
+            }
         }
     }
 
