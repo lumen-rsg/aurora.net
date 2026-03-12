@@ -1,5 +1,9 @@
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using Aurora.Core.Net;
 using Aurora.Core.IO;
+using Aurora.Core.Parsing;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -13,23 +17,34 @@ public class SyncCommand : ICommand
     {
         AnsiConsole.MarkupLine($"[blue]Synchronizing repositories...[/]");
         
-        // 1. New Path Logic: Check for etc/yum.repos.d
         var reposDir = PathHelper.GetPath(config.SysRoot, "etc/yum.repos.d");
+        var dbDir = PathHelper.GetPath(config.SysRoot, "var/lib/aurora");
         
         if (!Directory.Exists(reposDir) || !Directory.EnumerateFiles(reposDir, "*.repo").Any())
         {
             AnsiConsole.MarkupLine("[yellow]Warning:[/] No repository configurations found at [blue]etc/yum.repos.d/[/]");
-            AnsiConsole.MarkupLine("[grey]Please create a .repo file (e.g., lumina.repo) inside the target root.[/]");
             return;
         }
 
-        // 2. Initialize the RPM Repo Manager
-        var repoMgr = new RepoManager(config.SysRoot)
-        {
-            SkipSignatureCheck = config.SkipGpg
-        };
+        var repos = RepoConfigParser.ParseDirectory(reposDir);
 
-        // 3. UI Execution Loop
+        // --- STALE DATABASE CLEANUP ---
+        if (Directory.Exists(dbDir))
+        {
+            var existingDbs = Directory.GetFiles(dbDir, "*.sqlite");
+            foreach (var dbFile in existingDbs)
+            {
+                var repoId = Path.GetFileNameWithoutExtension(dbFile);
+                if (!repos.ContainsKey(repoId) || !repos[repoId].Enabled)
+                {
+                    AnsiConsole.MarkupLine($"[grey]Removing stale database:[/] {repoId}");
+                    try { File.Delete(dbFile); } catch { }
+                }
+            }
+        }
+
+        var repoMgr = new RepoManager(config.SysRoot) { SkipSignatureCheck = config.SkipGpg };
+
         await AnsiConsole.Live(new Table().Border(TableBorder.Rounded).AddColumn("Repository").AddColumn("Status"))
             .StartAsync(async ctx =>
             {
