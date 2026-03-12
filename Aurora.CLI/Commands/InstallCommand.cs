@@ -73,7 +73,8 @@ public class InstallCommand : ICommand
                 try
                 {
                     using var db = new RpmRepoDb(dbFile);
-                    var pkgs = db.GetAllPackages();
+                    string repoId = Path.GetFileNameWithoutExtension(dbFile); 
+                    var pkgs = db.GetAllPackages(repoId);
                     availablePackages.AddRange(pkgs);
                     loadedCount += pkgs.Count;
                 }

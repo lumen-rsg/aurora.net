@@ -24,7 +24,7 @@ public class RpmRepoDb : IDisposable
         };
     }
 
-    public List<Package> GetAllPackages()
+    public List<Package> GetAllPackages(string repoId)
     {
         var packages = new Dictionary<long, Package>();
 
@@ -52,6 +52,7 @@ public class RpmRepoDb : IDisposable
                 packages[pkgKey] = new Package
                 {
                     Name = reader.GetString(idName),
+                    RepositoryId = repoId, 
                     Epoch = reader.IsDBNull(idEpoch) ? "0" : reader.GetValue(idEpoch).ToString() ?? "0",
                     Version = reader.GetString(idVer),
                     Release = reader.GetString(idRel),

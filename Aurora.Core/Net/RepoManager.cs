@@ -150,38 +150,48 @@ public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Ac
         if (!Directory.Exists(reposDir)) throw new Exception("No repolist directory found.");
         var repos = RepoConfigParser.ParseDirectory(reposDir);
         
-        foreach (var repo in repos.Values.Where(r => r.Enabled))
+        // --- CRITICAL FIX: Direct Repository Target ---
+        if (!repos.TryGetValue(pkg.RepositoryId, out var targetRepo) || !targetRepo.Enabled)
         {
-            try
-            {
-                await FetchFile(repo.Url, pkg.LocationHref, cachePath, onProgress);
-
-                if (!string.IsNullOrEmpty(pkg.Checksum))
-                {
-                    var actualSum = HashHelper.ComputeFileHash(cachePath);
-                    if (!string.Equals(actualSum, pkg.Checksum, StringComparison.OrdinalIgnoreCase))
-                    {
-                        File.Delete(cachePath);
-                        throw new InvalidDataException("Integrity mismatch.");
-                    }
-                }
-                return cachePath;
-            }
-            catch (HttpRequestException)
-            {
-                // Normal 404 from this specific repo. Move to next.
-                if (File.Exists(cachePath)) File.Delete(cachePath);
-            }
-            catch (Exception ex)
-            {
-                // CRITICAL FIX: We must see this error if it's NOT a simple 404
-                // It could be a UriFormatException or DNS failure.
-                Spectre.Console.AnsiConsole.MarkupLine($"[yellow]DEBUG Error for {pkg.Name} on {repo.Name}: {ex.Message}[/]");
-                if (File.Exists(cachePath)) File.Delete(cachePath);
-            }
+            throw new Exception($"Cannot download {pkg.Name}: Repository '{pkg.RepositoryId}' is missing or disabled.");
         }
 
-        return null;
+        try
+        {
+            // PATH HEURISTIC FIX:
+            // If baseurl is ".../x64/lumina-core" and LocationHref is "lumina-core/Packages/..."
+            // we need to strip the redundant "lumina-core/" from the LocationHref.
+            string safeHref = pkg.LocationHref;
+            string repoNameSegment = pkg.RepositoryId + "/"; 
+            if (safeHref.StartsWith(repoNameSegment))
+            {
+                safeHref = safeHref.Substring(repoNameSegment.Length);
+            }
+
+            await FetchFile(targetRepo.Url, safeHref, cachePath, onProgress);
+
+            if (!string.IsNullOrEmpty(pkg.Checksum))
+            {
+                var actualSum = HashHelper.ComputeFileHash(cachePath);
+                if (!string.Equals(actualSum, pkg.Checksum, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(cachePath);
+                    throw new InvalidDataException("Integrity mismatch.");
+                }
+            }
+            return cachePath;
+        }
+        catch (HttpRequestException)
+        {
+            if (File.Exists(cachePath)) File.Delete(cachePath);
+        }
+        catch (Exception ex)
+        {
+            Spectre.Console.AnsiConsole.MarkupLine($"[yellow]DEBUG Error for {pkg.Name}: {ex.Message}[/]");
+            if (File.Exists(cachePath)) File.Delete(cachePath);
+        }
+
+        return null; // Failed to download from its assigned repo
     }
 
     private async Task FetchFile(string baseUrl, string relativePath, string destination, Action<long?, long>? onProgress = null)

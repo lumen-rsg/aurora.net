@@ -15,6 +15,9 @@ public class Package
     
     // Physical file location in the repo (e.g., "Packages/z/zlib-1.2.11-3.fc38.aarch64.rpm")
     public string LocationHref { get; set; } = string.Empty;
+    
+    // NEW: Track which repository this package belongs to
+    public string RepositoryId { get; set; } = string.Empty; 
     public string Checksum { get; set; } = string.Empty;
     public long Size { get; set; }
     public long InstalledSize { get; set; }

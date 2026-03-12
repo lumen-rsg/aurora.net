@@ -32,7 +32,8 @@ public class InfoCommand : ICommand
         foreach (var dbFile in repoFiles)
         {
             using var db = new RpmRepoDb(dbFile);
-            var pkgs = db.GetAllPackages();
+            string repoId = Path.GetFileNameWithoutExtension(dbFile); 
+            var pkgs = db.GetAllPackages(repoId);
             foundPkg = pkgs.FirstOrDefault(p => p.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
             
             if (foundPkg != null)

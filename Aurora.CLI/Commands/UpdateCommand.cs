@@ -35,7 +35,8 @@ public class UpdateCommand : ICommand
                 try
                 {
                     using var db = new RpmRepoDb(file);
-                    availablePackages.AddRange(db.GetAllPackages());
+                    string repoId = Path.GetFileNameWithoutExtension(file); 
+                    availablePackages.AddRange(db.GetAllPackages(repoId));
                 }
                 catch (Exception ex)
                 {
