@@ -168,42 +168,31 @@ public class DependencySolver
     {
         foreach (var pkg in packages)
         {
-            // 1. Implicit Provision: Does the package's actual name match the requirement?
-            // If glibc requires "setup", and the installed package is named "setup", it matches.
-            // We pass pkg.Name as the "providedString" so the version comparison works.
+            // 1. Check Name Match (Implicit Provide)
+            // e.g. Requirement 'setup' matches Package 'setup'
             bool nameMatch = pkg.Name == req.Name;
             
-            // UsrMerge aliasing for the implicit name check
+            // UsrMerge path aliasing
             if (!nameMatch && req.Name.StartsWith("/") && pkg.Name.StartsWith("/"))
             {
-                string reqFile = req.Name.Split('/').Last();
-                string provFile = pkg.Name.Split('/').Last();
-                nameMatch = (reqFile == provFile);
+                nameMatch = req.Name.Split('/').Last() == pkg.Name.Split('/').Last();
             }
 
-            if (nameMatch && req.IsSatisfiedBy(pkg, pkg.Name)) 
-            {
-                return true;
-            }
+            if (nameMatch && req.IsSatisfiedBy(pkg, pkg.Name)) return true;
 
-            // 2. Explicit Provision: Does the package provide a capability that matches?
-            // This is for virtual provides like "libtinfo.so.6()(64bit)"
+            // 2. Check Explicit Provides
+            // e.g. Requirement 'config(setup)' matches Package 'setup' (which provides 'config(setup)')
             foreach (var prov in pkg.Provides)
             {
                 var provReq = new RpmRequirement(prov);
-                
                 bool provMatch = provReq.Name == req.Name;
+
                 if (!provMatch && req.Name.StartsWith("/") && provReq.Name.StartsWith("/"))
                 {
-                    string reqFile = req.Name.Split('/').Last();
-                    string provFile = provReq.Name.Split('/').Last();
-                    provMatch = (reqFile == provFile);
+                    provMatch = req.Name.Split('/').Last() == provReq.Name.Split('/').Last();
                 }
 
-                if (provMatch && req.IsSatisfiedBy(pkg, prov)) 
-                {
-                    return true;
-                }
+                if (provMatch && req.IsSatisfiedBy(pkg, prov)) return true;
             }
         }
         return false;

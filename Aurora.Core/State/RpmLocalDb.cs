@@ -5,17 +5,16 @@ namespace Aurora.Core.State;
 
 public static class RpmLocalDb
 {
-    /// <summary>
-    /// Gets all installed packages directly from the RPM database using a formatted query.
-    /// </summary>
     public static List<Package> GetInstalledPackages(string sysRoot = "/")
     {
         var packages = new List<Package>();
         
+        // RPM Query Format: NAME|EPOCH|VERSION|RELEASE|ARCH|SIZE|PROVIDES(space separated)
+        // We use [%{PROVIDES} ] to iterate through all provides and put a space between them.
         var psi = new ProcessStartInfo
         {
             FileName = "rpm",
-            Arguments = "--root " + sysRoot + " -qa --qf \"%{NAME}|%{EPOCHNUM}|%{VERSION}|%{RELEASE}|%{ARCH}|%{SIZE}\\n\"",
+            Arguments = "--root " + sysRoot + " -qa --qf \"%{NAME}|%{EPOCHNUM}|%{VERSION}|%{RELEASE}|%{ARCH}|%{SIZE}|[%{PROVIDES} ]\\n\"",
             RedirectStandardOutput = true,
             UseShellExecute = false,
             CreateNoWindow = true
@@ -32,14 +31,10 @@ public static class RpmLocalDb
                 var parts = line.Split('|');
                 if (parts.Length < 6) continue;
 
-                // FIX: Normalize "(none)" to "0"
                 string epoch = parts[1];
-                if (epoch == "(none)" || string.IsNullOrWhiteSpace(epoch)) 
-                {
-                    epoch = "0";
-                }
+                if (epoch == "(none)" || string.IsNullOrWhiteSpace(epoch)) epoch = "0";
 
-                packages.Add(new Package
+                var pkg = new Package
                 {
                     Name = parts[0],
                     Epoch = epoch,
@@ -47,13 +42,23 @@ public static class RpmLocalDb
                     Release = parts[3],
                     Arch = parts[4],
                     InstalledSize = long.TryParse(parts[5], out var s) ? s : 0
-                });
+                };
+
+                // FIX: Populate Provides from the 7th column
+                if (parts.Length >= 7 && !string.IsNullOrWhiteSpace(parts[6]))
+                {
+                    // Split the space-separated provides list
+                    var providesList = parts[6].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    pkg.Provides.AddRange(providesList);
+                }
+
+                packages.Add(pkg);
             }
             process.WaitForExit();
         }
         catch 
         {
-            // If RPM isn't installed/working, return empty
+            // Silent fail for bootstrap
         }
 
         return packages;
