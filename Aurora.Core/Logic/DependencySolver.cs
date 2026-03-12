@@ -83,6 +83,11 @@ public class DependencySolver
             if (!processedReqs.Add(currentReqStr)) continue;
 
             var req = new RpmRequirement(currentReqStr);
+            
+            bool alreadyInstalled = _installedPackages.Any(p => 
+                p.Name == req.Name && req.IsSatisfiedBy(p, p.Name)
+            );
+            if (alreadyInstalled) continue;
 
             if (IsSatisfiedByList(req, _installedPackages)) continue;
             if (IsSatisfiedByList(req, plan)) continue;

@@ -35,10 +35,13 @@ public class InstallCommand : ICommand
         // --- Repo Install Path ---
         
         // Filter out packages that are already installed (unless --force)
+        var installedPkgs = RpmLocalDb.GetInstalledPackages(config.SysRoot);
         var targetsToResolve = new List<string>();
+
+        // Pre-filter the user's explicit arguments
         foreach (var arg in args)
         {
-            if (RpmLocalDb.IsInstalled(arg, config.SysRoot) && !config.Force)
+            if (!config.Force && installedPkgs.Any(p => p.Name.Equals(arg, StringComparison.OrdinalIgnoreCase)))
             {
                 AnsiConsole.MarkupLine($"[yellow]Skipping [bold]{arg}[/]: already installed.[/]");
             }
@@ -50,12 +53,11 @@ public class InstallCommand : ICommand
 
         if (targetsToResolve.Count == 0)
         {
-            AnsiConsole.MarkupLine("[green]Nothing to do.[/]");
+            AnsiConsole.MarkupLine("[green]Nothing to do. All requested packages are already installed.[/]");
             return;
         }
 
         var availablePackages = new List<Package>();
-        var installedPkgs = RpmLocalDb.GetInstalledPackages(config.SysRoot);
 
         // 1. Load Repos
         var repoFiles = Directory.GetFiles(config.RepoDir, "*.sqlite");

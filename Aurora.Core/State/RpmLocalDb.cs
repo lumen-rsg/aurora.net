@@ -12,7 +12,6 @@ public static class RpmLocalDb
     {
         var packages = new List<Package>();
         
-        // RPM query format: NAME|EPOCH|VERSION|RELEASE|ARCH|SIZE
         var psi = new ProcessStartInfo
         {
             FileName = "rpm",
@@ -33,10 +32,17 @@ public static class RpmLocalDb
                 var parts = line.Split('|');
                 if (parts.Length < 6) continue;
 
+                // FIX: Normalize "(none)" to "0"
+                string epoch = parts[1];
+                if (epoch == "(none)" || string.IsNullOrWhiteSpace(epoch)) 
+                {
+                    epoch = "0";
+                }
+
                 packages.Add(new Package
                 {
                     Name = parts[0],
-                    Epoch = parts[1],
+                    Epoch = epoch,
                     Version = parts[2],
                     Release = parts[3],
                     Arch = parts[4],
@@ -47,7 +53,7 @@ public static class RpmLocalDb
         }
         catch 
         {
-            // If RPM isn't installed/working, return empty (e.g., during bootstrap)
+            // If RPM isn't installed/working, return empty
         }
 
         return packages;
