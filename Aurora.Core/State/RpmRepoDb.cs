@@ -28,14 +28,13 @@ public class RpmRepoDb : IDisposable
     {
         var packages = new Dictionary<long, Package>();
 
-        // 1. Fetch Core Package Data
+        // 1. Fetch Core Package Data (Arch filtered)
         using (var cmd = _connection.CreateCommand())
         {
             cmd.CommandText = "SELECT * FROM packages WHERE arch = $arch OR arch = 'noarch'";
             cmd.Parameters.AddWithValue("$arch", _hostArch);
             
             using var reader = cmd.ExecuteReader();
-            // Map ordinals once for performance
             int idKey = reader.GetOrdinal("pkgKey");
             int idName = reader.GetOrdinal("name");
             int idEpoch = reader.GetOrdinal("epoch");
@@ -43,7 +42,7 @@ public class RpmRepoDb : IDisposable
             int idRel = reader.GetOrdinal("release");
             int idArch = reader.GetOrdinal("arch");
             int idLoc = reader.GetOrdinal("location_href");
-            int idId = reader.GetOrdinal("pkgId"); // Checksum
+            int idId = reader.GetOrdinal("pkgId");
             int idSizeP = reader.GetOrdinal("size_package");
 
             while (reader.Read())
@@ -51,8 +50,8 @@ public class RpmRepoDb : IDisposable
                 long pkgKey = reader.GetInt64(idKey);
                 packages[pkgKey] = new Package
                 {
+                    RepositoryId = repoId,
                     Name = reader.GetString(idName),
-                    RepositoryId = repoId, 
                     Epoch = reader.IsDBNull(idEpoch) ? "0" : reader.GetValue(idEpoch).ToString() ?? "0",
                     Version = reader.GetString(idVer),
                     Release = reader.GetString(idRel),
@@ -64,37 +63,56 @@ public class RpmRepoDb : IDisposable
             }
         }
 
-        // 2. Fetch Provides (Capabilities)
+        // 2. Fetch Provides
         using (var cmd = _connection.CreateCommand())
         {
             cmd.CommandText = "SELECT pkgKey, name FROM provides";
             using var reader = cmd.ExecuteReader();
             int idKey = reader.GetOrdinal("pkgKey");
             int idName = reader.GetOrdinal("name");
+            while (reader.Read())
+            {
+                if (packages.TryGetValue(reader.GetInt64(idKey), out var pkg))
+                    pkg.Provides.Add(reader.GetString(idName));
+            }
+        }
 
+        // 3. Fetch Important Files (NEW)
+        // We load file paths from standard binary directories to satisfy path-based requirements
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = @"
+                SELECT pkgKey, name FROM files 
+                WHERE name LIKE '/usr/bin/%' 
+                   OR name LIKE '/bin/%' 
+                   OR name LIKE '/usr/sbin/%' 
+                   OR name LIKE '/sbin/%'
+                   OR name LIKE '/etc/%'";
+            
+            using var reader = cmd.ExecuteReader();
+            int idKey = reader.GetOrdinal("pkgKey");
+            int idName = reader.GetOrdinal("name");
             while (reader.Read())
             {
                 if (packages.TryGetValue(reader.GetInt64(idKey), out var pkg))
                 {
-                    pkg.Provides.Add(reader.GetString(idName)); 
+                    // Treat the file path as a virtual provide
+                    pkg.Provides.Add(reader.GetString(idName));
                 }
             }
         }
 
-        // 3. Fetch Requires
+        // 4. Fetch Requires
         using (var cmd = _connection.CreateCommand())
         {
             cmd.CommandText = "SELECT pkgKey, name FROM requires WHERE name NOT LIKE 'rpmlib(%'";
             using var reader = cmd.ExecuteReader();
             int idKey = reader.GetOrdinal("pkgKey");
             int idName = reader.GetOrdinal("name");
-
             while (reader.Read())
             {
                 if (packages.TryGetValue(reader.GetInt64(idKey), out var pkg))
-                {
                     pkg.Requires.Add(reader.GetString(idName));
-                }
             }
         }
 

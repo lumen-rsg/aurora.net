@@ -24,6 +24,20 @@ public class DependencySolver
             {
                 var provName = prov.Split(' ')[0]; 
                 AddProvider(provName, pkg, prov);
+
+                // --- NEW: UsrMerge Indexing ---
+                // If a package provides a path, index its aliases immediately
+                if (provName.StartsWith("/"))
+                {
+                    if (provName.StartsWith("/usr/bin/")) 
+                        AddProvider(provName.Replace("/usr/bin/", "/bin/"), pkg, prov);
+                    else if (provName.StartsWith("/bin/")) 
+                        AddProvider(provName.Replace("/bin/", "/usr/bin/"), pkg, prov);
+                    else if (provName.StartsWith("/usr/sbin/")) 
+                        AddProvider(provName.Replace("/usr/sbin/", "/sbin/"), pkg, prov);
+                    else if (provName.StartsWith("/sbin/")) 
+                        AddProvider(provName.Replace("/sbin/", "/usr/sbin/"), pkg, prov);
+                }
             }
         }
 
