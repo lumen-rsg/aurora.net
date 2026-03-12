@@ -24,11 +24,8 @@ public class RpmRequirement
             
             var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             
-            // The primary package we need to satisfy is always the first token
-            // e.g., "glibc-gconv-extra(x86-64) = 2.42 if redhat-rpm-config" -> "glibc-gconv-extra(x86-64)"
             Name = tokens[0];
 
-            // Check if the next token is a standard version operator
             if (tokens.Length >= 3 && IsVersionOperator(tokens[1]))
             {
                 Operator = tokens[1];
@@ -61,15 +58,33 @@ public class RpmRequirement
 
         var provParts = providedString.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
         
-        string versionToCompare = pkg.Version;
+        // --- CRITICAL FIX: Use FullVersion ---
+        // We must check against the Package's full Version-Release string, 
+        // because RPM dependencies usually specify both.
+        // If Epoch > 0, FullVersion includes "Epoch:". If the requirement doesn't have an epoch, 
+        // we might need to strip it for a fair comparison, but VersionComparer usually handles it.
+        string versionToCompare = pkg.FullVersion; 
 
-        // Extract version from virtual provides if present
+        // If the provision itself explicitly states a version (e.g. virtual capability), override the package version
         if (provParts.Length >= 3 && IsVersionOperator(provParts[1]))
         {
             versionToCompare = provParts[2];
         }
 
         if (Version == null) return true;
+
+        // If the requested version does NOT contain a release (no hyphen), 
+        // but our FullVersion does, we should strip our release to compare apples to apples.
+        // e.g. Req: "bash >= 5.0", Pkg: "5.0-1.fc39" -> Compare "5.0" to "5.0"
+        if (!Version.Contains('-') && versionToCompare.Contains('-'))
+        {
+            // Only strip if it doesn't have an Epoch prefix containing a dash (rare, but possible)
+            var dashIndex = versionToCompare.LastIndexOf('-');
+            if (dashIndex > 0)
+            {
+                versionToCompare = versionToCompare.Substring(0, dashIndex);
+            }
+        }
 
         int cmp = VersionComparer.Compare(versionToCompare, Version);
 
