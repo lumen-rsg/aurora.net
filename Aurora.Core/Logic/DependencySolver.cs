@@ -22,7 +22,7 @@ public class DependencySolver
 
             foreach (var prov in pkg.Provides)
             {
-                var provName = new RpmRequirement(prov).Name;
+                var provName = prov.Split(' ')[0]; 
                 AddProvider(provName, pkg, prov);
             }
         }
@@ -44,6 +44,30 @@ public class DependencySolver
             _providersMap[name].Add((pkg, provString));
     }
 
+    // --- NEW: Universal UsrMerge Path Normalizer ---
+    private string? FindPathAlias(string requestedPath)
+    {
+        // Extract the filename (e.g., "alternatives")
+        string fileName = requestedPath.Split('/').Last();
+
+        var possiblePaths = new[]
+        {
+            $"/usr/bin/{fileName}",
+            $"/usr/sbin/{fileName}",
+            $"/bin/{fileName}",
+            $"/sbin/{fileName}"
+        };
+
+        foreach (var path in possiblePaths)
+        {
+            if (_providersMap.ContainsKey(path))
+            {
+                return path;
+            }
+        }
+        return null;
+    }
+
     public List<Package> Resolve(IEnumerable<string> targets)
     {
         var plan = new HashSet<Package>();
@@ -63,31 +87,15 @@ public class DependencySolver
             if (IsSatisfiedByList(req, _installedPackages)) continue;
             if (IsSatisfiedByList(req, plan)) continue;
 
-            // --- CRITICAL FIX: UsrMerge Normalization ---
-            // If the strict name isn't found, try its alias.
             string lookupName = req.Name;
             
-            if (!_providersMap.ContainsKey(lookupName))
+            // Apply universal path normalization if it looks like an absolute path
+            if (lookupName.StartsWith("/") && !_providersMap.ContainsKey(lookupName))
             {
-                if (lookupName.StartsWith("/usr/bin/"))
+                var alias = FindPathAlias(lookupName);
+                if (alias != null)
                 {
-                    string alias = lookupName.Replace("/usr/bin/", "/bin/");
-                    if (_providersMap.ContainsKey(alias)) lookupName = alias;
-                }
-                else if (lookupName.StartsWith("/bin/"))
-                {
-                    string alias = lookupName.Replace("/bin/", "/usr/bin/");
-                    if (_providersMap.ContainsKey(alias)) lookupName = alias;
-                }
-                else if (lookupName.StartsWith("/usr/sbin/"))
-                {
-                    string alias = lookupName.Replace("/usr/sbin/", "/sbin/");
-                    if (_providersMap.ContainsKey(alias)) lookupName = alias;
-                }
-                else if (lookupName.StartsWith("/sbin/"))
-                {
-                    string alias = lookupName.Replace("/sbin/", "/usr/sbin/");
-                    if (_providersMap.ContainsKey(alias)) lookupName = alias;
+                    lookupName = alias;
                 }
             }
 
@@ -117,7 +125,6 @@ public class DependencySolver
                 throw new Exception(msg);
             }
 
-            // Notice we use the original req but pass the validCandidates found via the alias lookup
             var validCandidates = candidates.Where(c => req.IsSatisfiedBy(c.Pkg, c.ProvString)).ToList();
 
             if (validCandidates.Count == 0)
@@ -133,7 +140,6 @@ public class DependencySolver
                 foreach (var childReq in chosenPkg.Requires)
                 {
                     if (childReq.StartsWith("rpmlib(")) continue;
-                    // Ignore self-references to prevent infinite trivial loops
                     if (new RpmRequirement(childReq).Name == chosenPkg.Name) continue;
                     
                     queue.Enqueue((childReq, chosenPkg));
@@ -162,12 +168,13 @@ public class DependencySolver
             {
                 var provReq = new RpmRequirement(prov);
                 
-                // UsrMerge normalization for satisfaction checks too
+                // Universal normalization for satisfaction checking
                 bool match = provReq.Name == req.Name;
-                if (!match && req.Name.StartsWith("/"))
+                if (!match && req.Name.StartsWith("/") && provReq.Name.StartsWith("/"))
                 {
-                     match = (provReq.Name.Replace("/usr/bin/", "/bin/") == req.Name.Replace("/usr/bin/", "/bin/")) ||
-                             (provReq.Name.Replace("/usr/sbin/", "/sbin/") == req.Name.Replace("/usr/sbin/", "/sbin/"));
+                    string reqFile = req.Name.Split('/').Last();
+                    string provFile = provReq.Name.Split('/').Last();
+                    match = (reqFile == provFile);
                 }
 
                 if (match && req.IsSatisfiedBy(pkg, prov)) return true;
@@ -197,12 +204,11 @@ public class DependencySolver
                     p.Provides.Any(pr => 
                     {
                         var n = new RpmRequirement(pr).Name;
-                        // Handle topological sort aliasing
                         if (n == reqName) return true;
+                        
                         if (n.StartsWith("/") && reqName.StartsWith("/"))
                         {
-                            return n.Replace("/usr/bin/", "/bin/") == reqName.Replace("/usr/bin/", "/bin/") ||
-                                   n.Replace("/usr/sbin/", "/sbin/") == reqName.Replace("/usr/sbin/", "/sbin/");
+                            return n.Split('/').Last() == reqName.Split('/').Last();
                         }
                         return false;
                     })
