@@ -168,21 +168,42 @@ public class DependencySolver
     {
         foreach (var pkg in packages)
         {
-            if (pkg.Name == req.Name && req.IsSatisfiedBy(pkg, pkg.Name)) return true;
+            // 1. Implicit Provision: Does the package's actual name match the requirement?
+            // If glibc requires "setup", and the installed package is named "setup", it matches.
+            // We pass pkg.Name as the "providedString" so the version comparison works.
+            bool nameMatch = pkg.Name == req.Name;
+            
+            // UsrMerge aliasing for the implicit name check
+            if (!nameMatch && req.Name.StartsWith("/") && pkg.Name.StartsWith("/"))
+            {
+                string reqFile = req.Name.Split('/').Last();
+                string provFile = pkg.Name.Split('/').Last();
+                nameMatch = (reqFile == provFile);
+            }
+
+            if (nameMatch && req.IsSatisfiedBy(pkg, pkg.Name)) 
+            {
+                return true;
+            }
+
+            // 2. Explicit Provision: Does the package provide a capability that matches?
+            // This is for virtual provides like "libtinfo.so.6()(64bit)"
             foreach (var prov in pkg.Provides)
             {
                 var provReq = new RpmRequirement(prov);
                 
-                // Universal normalization for satisfaction checking
-                bool match = provReq.Name == req.Name;
-                if (!match && req.Name.StartsWith("/") && provReq.Name.StartsWith("/"))
+                bool provMatch = provReq.Name == req.Name;
+                if (!provMatch && req.Name.StartsWith("/") && provReq.Name.StartsWith("/"))
                 {
                     string reqFile = req.Name.Split('/').Last();
                     string provFile = provReq.Name.Split('/').Last();
-                    match = (reqFile == provFile);
+                    provMatch = (reqFile == provFile);
                 }
 
-                if (match && req.IsSatisfiedBy(pkg, prov)) return true;
+                if (provMatch && req.IsSatisfiedBy(pkg, prov)) 
+                {
+                    return true;
+                }
             }
         }
         return false;
