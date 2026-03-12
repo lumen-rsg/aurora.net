@@ -12,6 +12,7 @@ using Aurora.Core.Logging;
 using Aurora.Core.Models;
 using Aurora.Core.Parsing;
 using Aurora.Core.Security;
+using Spectre.Console;
 
 namespace Aurora.Core.Net;
 
@@ -127,62 +128,57 @@ public class RepoManager
 
     public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Action<long?, long> onProgress)
     {
-        if (string.IsNullOrEmpty(pkg.LocationHref))
-        {
-            throw new ArgumentException($"Package {pkg.Name} lacks a LocationHref.");
-        }
+        if (string.IsNullOrEmpty(pkg.LocationHref)) throw new ArgumentException($"Package {pkg.Name} lacks a LocationHref.");
 
-        // RPM defines the exact path in LocationHref (e.g., "Packages/z/zlib-1.2.11-1.fc38.aarch64.rpm")
         var filename = Path.GetFileName(pkg.LocationHref);
         var cachePath = Path.Combine(cacheDir, filename);
 
-        // Check Cache & Integrity
         if (File.Exists(cachePath))
         {
-            // RPM uses 'pkgId' as the SHA256 checksum
             if (string.IsNullOrEmpty(pkg.Checksum) || HashHelper.ComputeFileHash(cachePath) == pkg.Checksum)
             {
                 var info = new FileInfo(cachePath);
                 onProgress(info.Length, info.Length);
                 return cachePath;
             }
-            AuLogger.Debug($"Cache mismatch for {filename}, re-downloading...");
             File.Delete(cachePath);
         }
         
         Directory.CreateDirectory(cacheDir);
 
         var reposDir = PathHelper.GetPath(_rootPath, "etc/yum.repos.d");
-        
-        // FIX: Check Directory.Exists instead of File.Exists for a directory
         if (!Directory.Exists(reposDir)) throw new Exception("No repolist directory found.");
-        
         var repos = RepoConfigParser.ParseDirectory(reposDir);
         
         foreach (var repo in repos.Values.Where(r => r.Enabled))
         {
             try
             {
-                // Fetch using the exact relative path from the repository root
+                // DEBUG: Print the attempt
+                AnsiConsole.MarkupLine($"[grey]Trying {repo.Name} for {pkg.Name}...[/]");
+                
                 await FetchFile(repo.Url, pkg.LocationHref, cachePath, onProgress);
 
-                // Verify SHA256 integrity after download
                 if (!string.IsNullOrEmpty(pkg.Checksum))
                 {
                     var actualSum = HashHelper.ComputeFileHash(cachePath);
                     if (!string.Equals(actualSum, pkg.Checksum, StringComparison.OrdinalIgnoreCase))
                     {
                         File.Delete(cachePath);
-                        throw new InvalidDataException($"Integrity check failed: SHA256 mismatch for {filename}.");
+                        throw new InvalidDataException("Integrity mismatch.");
                     }
                 }
-                
                 return cachePath;
+            }
+            catch (HttpRequestException)
+            {
+                // Standard 404, package not in this specific repo. Move to next.
+                if (File.Exists(cachePath)) File.Delete(cachePath);
             }
             catch (Exception ex)
             {
                 AuLogger.Debug($"Mirror {repo.Name} failed for {filename}: {ex.Message}");
-                // Fallthrough to try the next mirror
+                if (File.Exists(cachePath)) File.Delete(cachePath);
             }
         }
 
@@ -193,39 +189,33 @@ public class RepoManager
     {
         var baseUriString = baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/";
         var baseUri = new Uri(baseUriString);
+        var escapedFilename = relativePath.Replace(":", "%3A"); // Handle epochs
+        var fullUri = new Uri(baseUri, escapedFilename);
+
+        // --- CRITICAL DEBUG LINE ---
+        // Uncomment this if the next run still fails, it will print the exact URL
+        AuLogger.Info($"Fetching: {fullUri.AbsoluteUri}");
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, fullUri) { Version = HttpVersion.Version11 };
+        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         
-        // Let Uri combine the base URL and the relative path (LocationHref)
-        var fullUri = new Uri(baseUri, relativePath);
+        response.EnsureSuccessStatusCode(); // Throws on 404
 
-        if (fullUri.Scheme == "file")
+        var totalBytes = response.Content.Headers.ContentLength;
+        await using var downloadStream = await response.Content.ReadAsStreamAsync();
+        
+        // Open file ONLY if we got a 200 OK
+        await using var fileStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
+
+        var buffer = new byte[32768];
+        long totalDownloaded = 0;
+        int bytesRead;
+
+        while ((bytesRead = await downloadStream.ReadAsync(buffer)) != 0)
         {
-            var sourcePath = fullUri.LocalPath;
-            if (!File.Exists(sourcePath)) throw new FileNotFoundException($"Local file mirror not found: {sourcePath}");
-            File.Copy(sourcePath, destination, overwrite: true);
-            var info = new FileInfo(sourcePath);
-            onProgress?.Invoke(info.Length, info.Length);
-        }
-        else
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, fullUri) { Version = HttpVersion.Version11 };
-            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            var totalBytes = response.Content.Headers.ContentLength;
-            
-            await using var downloadStream = await response.Content.ReadAsStreamAsync();
-            await using var fileStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
-
-            var buffer = new byte[32768]; // 32KB buffer for performance
-            long totalDownloaded = 0;
-            int bytesRead;
-
-            while ((bytesRead = await downloadStream.ReadAsync(buffer)) != 0)
-            {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
-                totalDownloaded += bytesRead;
-                onProgress?.Invoke(totalBytes, totalDownloaded);
-            }
+            await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
+            totalDownloaded += bytesRead;
+            onProgress?.Invoke(totalBytes, totalDownloaded);
         }
     }
 
