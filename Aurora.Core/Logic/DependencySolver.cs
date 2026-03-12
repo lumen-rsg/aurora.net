@@ -22,7 +22,7 @@ public class DependencySolver
 
             foreach (var prov in pkg.Provides)
             {
-                var provName = prov.Split(' ')[0]; 
+                var provName = new RpmRequirement(prov).Name;
                 AddProvider(provName, pkg, prov);
             }
         }
@@ -47,8 +47,6 @@ public class DependencySolver
     public List<Package> Resolve(IEnumerable<string> targets)
     {
         var plan = new HashSet<Package>();
-        
-        // UPGRADE 1: Track the requester (Parent) so we can trace dependency chains
         var queue = new Queue<(string ReqStr, Package? Requester)>();
         var processedReqs = new HashSet<string>();
 
@@ -65,18 +63,42 @@ public class DependencySolver
             if (IsSatisfiedByList(req, _installedPackages)) continue;
             if (IsSatisfiedByList(req, plan)) continue;
 
-            if (!_providersMap.TryGetValue(req.Name, out var candidates))
+            // --- CRITICAL FIX: UsrMerge Normalization ---
+            // If the strict name isn't found, try its alias.
+            string lookupName = req.Name;
+            
+            if (!_providersMap.ContainsKey(lookupName))
             {
-                // UPGRADE 2: Bypass virtual identities
-                // Fedora relies on systemd-sysusers now, so explicit user/group provides are often missing.
+                if (lookupName.StartsWith("/usr/bin/"))
+                {
+                    string alias = lookupName.Replace("/usr/bin/", "/bin/");
+                    if (_providersMap.ContainsKey(alias)) lookupName = alias;
+                }
+                else if (lookupName.StartsWith("/bin/"))
+                {
+                    string alias = lookupName.Replace("/bin/", "/usr/bin/");
+                    if (_providersMap.ContainsKey(alias)) lookupName = alias;
+                }
+                else if (lookupName.StartsWith("/usr/sbin/"))
+                {
+                    string alias = lookupName.Replace("/usr/sbin/", "/sbin/");
+                    if (_providersMap.ContainsKey(alias)) lookupName = alias;
+                }
+                else if (lookupName.StartsWith("/sbin/"))
+                {
+                    string alias = lookupName.Replace("/sbin/", "/usr/sbin/");
+                    if (_providersMap.ContainsKey(alias)) lookupName = alias;
+                }
+            }
+
+            if (!_providersMap.TryGetValue(lookupName, out var candidates))
+            {
                 if (req.Name.StartsWith("user(") || req.Name.StartsWith("group("))
                 {
                     AnsiConsole.MarkupLine($"[grey]Bypassing virtual identity:[/] {req.Name} [grey](Handled by sysusers)[/]");
                     continue;
                 }
 
-                // If it's a file path dependency (e.g. /usr/bin/sh) and it's missing,
-                // we should log who needs it.
                 string requesterInfo = requester != null ? $" (required by [bold]{requester.Name}[/])" : "";
                 
                 var suggestions = _providersMap.Keys
@@ -95,6 +117,7 @@ public class DependencySolver
                 throw new Exception(msg);
             }
 
+            // Notice we use the original req but pass the validCandidates found via the alias lookup
             var validCandidates = candidates.Where(c => req.IsSatisfiedBy(c.Pkg, c.ProvString)).ToList();
 
             if (validCandidates.Count == 0)
@@ -103,14 +126,17 @@ public class DependencySolver
                 throw new Exception($"Version conflict for '{currentReqStr}'{reqInfo}.");
             }
 
-            var chosenPkg = PickBestCandidate(req.Name, validCandidates);
+            var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 
             if (plan.Add(chosenPkg))
             {
                 foreach (var childReq in chosenPkg.Requires)
                 {
                     if (childReq.StartsWith("rpmlib(")) continue;
-                    queue.Enqueue((childReq, chosenPkg)); // Pass the current package as the requester
+                    // Ignore self-references to prevent infinite trivial loops
+                    if (new RpmRequirement(childReq).Name == chosenPkg.Name) continue;
+                    
+                    queue.Enqueue((childReq, chosenPkg));
                 }
             }
         }
@@ -135,7 +161,16 @@ public class DependencySolver
             foreach (var prov in pkg.Provides)
             {
                 var provReq = new RpmRequirement(prov);
-                if (provReq.Name == req.Name && req.IsSatisfiedBy(pkg, prov)) return true;
+                
+                // UsrMerge normalization for satisfaction checks too
+                bool match = provReq.Name == req.Name;
+                if (!match && req.Name.StartsWith("/"))
+                {
+                     match = (provReq.Name.Replace("/usr/bin/", "/bin/") == req.Name.Replace("/usr/bin/", "/bin/")) ||
+                             (provReq.Name.Replace("/usr/sbin/", "/sbin/") == req.Name.Replace("/usr/sbin/", "/sbin/"));
+                }
+
+                if (match && req.IsSatisfiedBy(pkg, prov)) return true;
             }
         }
         return false;
@@ -159,7 +194,18 @@ public class DependencySolver
                 var reqName = new RpmRequirement(reqStr).Name;
                 var providerInPlan = unsorted.FirstOrDefault(p => 
                     p.Name == reqName || 
-                    p.Provides.Any(pr => new RpmRequirement(pr).Name == reqName)
+                    p.Provides.Any(pr => 
+                    {
+                        var n = new RpmRequirement(pr).Name;
+                        // Handle topological sort aliasing
+                        if (n == reqName) return true;
+                        if (n.StartsWith("/") && reqName.StartsWith("/"))
+                        {
+                            return n.Replace("/usr/bin/", "/bin/") == reqName.Replace("/usr/bin/", "/bin/") ||
+                                   n.Replace("/usr/sbin/", "/sbin/") == reqName.Replace("/usr/sbin/", "/sbin/");
+                        }
+                        return false;
+                    })
                 );
 
                 if (providerInPlan != null)
