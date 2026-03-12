@@ -156,12 +156,41 @@ public class DependencySolver
 
             if (plan.Add(chosenPkg))
             {
-                foreach (var childReq in chosenPkg.Requires)
+                foreach (var childReqStr in chosenPkg.Requires)
                 {
-                    if (childReq.StartsWith("rpmlib(")) continue;
-                    if (new RpmRequirement(childReq).Name == chosenPkg.Name) continue;
-                    
-                    queue.Enqueue((childReq, chosenPkg));
+                    if (childReqStr.StartsWith("rpmlib(")) continue;
+
+                    // --- NEW: Smart Boolean Logic Bypass ---
+                    if (childReqStr.StartsWith("(") && childReqStr.Contains(" if "))
+                    {
+                        // Example: "(systemd-rpm-macros = 258.5 if rpm-build)"
+                        string clean = childReqStr.Trim('(', ')');
+                        var parts = clean.Split(new[] { " if " }, StringSplitOptions.RemoveEmptyEntries);
+                        
+                        if (parts.Length == 2)
+                        {
+                            var conditionPkgName = parts[1].Trim();
+
+                            // Evaluate the condition: Is the 'IF' package going to be on the system?
+                            bool conditionMet = plan.Any(p => p.Name == conditionPkgName) || 
+                                                _installedPackages.Any(p => p.Name == conditionPkgName);
+
+                            if (!conditionMet)
+                            {
+                                AnsiConsole.MarkupLine($"[grey]Bypassing conditional:[/] {childReqStr} [grey](Condition '{conditionPkgName}' not met)[/]");
+                                continue; // Skip enqueuing this requirement
+                            }
+                            else
+                            {
+                                // Condition IS met. Enqueue the left side (the actual requirement)
+                                queue.Enqueue((parts[0].Trim(), chosenPkg));
+                                continue;
+                            }
+                        }
+                    }
+
+                    // For standard requirements or 'OR' logic (which our RpmRequirement handles by trying the first token)
+                    queue.Enqueue((childReqStr, chosenPkg));
                 }
             }
         }
