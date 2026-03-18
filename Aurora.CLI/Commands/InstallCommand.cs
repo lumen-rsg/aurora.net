@@ -17,7 +17,7 @@ public class InstallCommand : ICommand
         if (args.Length < 1) throw new ArgumentException("Usage: install <pkg1> [pkg2] ...");
         
         // 1. Check Mode: Local Files vs Repo Packages
-        // For simplicity in V1, we assume if the first arg ends in .rpm, all are files.
+        // For simplicity in V1, we assume if the first arg ends in .rpm, all are files. TODO
         bool isLocalFileMode = args.All(a => a.EndsWith(".rpm"));
 
         if (isLocalFileMode)

@@ -12,42 +12,50 @@ public class RpmRequirement
 
     public RpmRequirement(string raw)
     {
-        raw = raw.Trim();
+        var span = raw.AsSpan().Trim();
 
-        // 1. Detect RPM Rich Dependencies (Boolean Logic)
-        if (raw.StartsWith("("))
+        if (span.StartsWith("("))
         {
             IsRichDependency = true;
-            
-            // Strip the outer parentheses
-            string clean = raw.TrimStart('(').TrimEnd(')');
-            
-            var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            
-            Name = tokens[0];
-
-            if (tokens.Length >= 3 && IsVersionOperator(tokens[1]))
-            {
-                Operator = tokens[1];
-                Version = tokens[2];
-            }
-            return;
+            span = span.Slice(1, span.Length - 2).Trim();
+        }
+        else
+        {
+            IsRichDependency = false;
         }
 
-        // 2. Standard Dependencies
-        IsRichDependency = false;
-        var parts = raw.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-
-        Name = parts[0];
-
-        if (parts.Length >= 3 && IsVersionOperator(parts[1]))
+        int firstSpace = span.IndexOf(' ');
+        if (firstSpace == -1)
         {
-            Operator = parts[1];
-            Version = parts[2];
+            Name = span.ToString();
+        }
+        else
+        {
+            Name = span.Slice(0, firstSpace).ToString();
+            var rest = span.Slice(firstSpace + 1).TrimStart();
+            
+            int secondSpace = rest.IndexOf(' ');
+            if (secondSpace != -1)
+            {
+                var opSpan = rest.Slice(0, secondSpace);
+                if (IsVersionOperator(opSpan))
+                {
+                    var afterOp = rest.Slice(secondSpace + 1).TrimStart();
+                    if (!afterOp.IsEmpty)
+                    {
+                        // Supports fallback behavior for things like: "pkgA >= 1.0 or pkgB"
+                        int thirdSpace = afterOp.IndexOf(' ');
+                        var versionSpan = thirdSpace == -1 ? afterOp : afterOp.Slice(0, thirdSpace);
+                        
+                        Operator = opSpan.ToString();
+                        Version = versionSpan.ToString();
+                    }
+                }
+            }
         }
     }
 
-    private bool IsVersionOperator(string op)
+    private static bool IsVersionOperator(ReadOnlySpan<char> op)
     {
         return op is ">=" or "<=" or "=" or ">" or "<" or "==" or "!=";
     }
@@ -56,30 +64,36 @@ public class RpmRequirement
     {
         if (Operator == null) return true;
 
-        var provParts = providedString.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-        
-        // --- CRITICAL FIX: Use FullVersion ---
-        // We must check against the Package's full Version-Release string, 
-        // because RPM dependencies usually specify both.
-        // If Epoch > 0, FullVersion includes "Epoch:". If the requirement doesn't have an epoch, 
-        // we might need to strip it for a fair comparison, but VersionComparer usually handles it.
         string versionToCompare = pkg.FullVersion; 
 
-        // If the provision itself explicitly states a version (e.g. virtual capability), override the package version
-        if (provParts.Length >= 3 && IsVersionOperator(provParts[1]))
+        // Quickly extract inline version overrides without generating Arrays via .Split()
+        var provSpan = providedString.AsSpan().Trim();
+        int firstSpace = provSpan.IndexOf(' ');
+        if (firstSpace != -1)
         {
-            versionToCompare = provParts[2];
+            var rest = provSpan.Slice(firstSpace + 1).TrimStart();
+            int secondSpace = rest.IndexOf(' ');
+            if (secondSpace != -1)
+            {
+                var opSpan = rest.Slice(0, secondSpace);
+                if (IsVersionOperator(opSpan))
+                {
+                    var afterOp = rest.Slice(secondSpace + 1).TrimStart();
+                    if (!afterOp.IsEmpty)
+                    {
+                        int thirdSpace = afterOp.IndexOf(' ');
+                        var versionSpan = thirdSpace == -1 ? afterOp : afterOp.Slice(0, thirdSpace);
+                        versionToCompare = versionSpan.ToString();
+                    }
+                }
+            }
         }
 
         if (Version == null) return true;
 
-        // If the requested version does NOT contain a release (no hyphen), 
-        // but our FullVersion does, we should strip our release to compare apples to apples.
-        // e.g. Req: "bash >= 5.0", Pkg: "5.0-1.fc39" -> Compare "5.0" to "5.0"
         if (!Version.Contains('-') && versionToCompare.Contains('-'))
         {
-            // Only strip if it doesn't have an Epoch prefix containing a dash (rare, but possible)
-            var dashIndex = versionToCompare.LastIndexOf('-');
+            int dashIndex = versionToCompare.LastIndexOf('-');
             if (dashIndex > 0)
             {
                 versionToCompare = versionToCompare.Substring(0, dashIndex);

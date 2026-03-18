@@ -8,77 +8,92 @@ namespace Aurora.Core.Logic;
 
 public class DependencySolver
 {
-    private readonly List<Package> _installedPackages;
+    private readonly HashSet<Package> _installedPackagesSet;
     private readonly Dictionary<string, List<(Package Pkg, string ProvString)>> _providersMap;
 
     public DependencySolver(IEnumerable<Package> availablePackages, IEnumerable<Package> installedPackages)
     {
-        _installedPackages = installedPackages.ToList();
-        _providersMap = new Dictionary<string, List<(Package, string)>>();
+        var installedList = installedPackages.ToList();
+        _installedPackagesSet = installedList.ToHashSet();
+        
+        // Use a large initial capacity to prevent costly re-hashing
+        _providersMap = new Dictionary<string, List<(Package, string)>>(100000);
 
-        foreach (var pkg in availablePackages)
+        // Process all packages (available + installed) to build a universal lookup map
+        var allPackages = availablePackages.Concat(installedList).DistinctBy(p => p.Nevra);
+
+        foreach (var pkg in allPackages)
         {
             AddProvider(pkg.Name, pkg, pkg.Name);
 
             foreach (var prov in pkg.Provides)
             {
-                var provName = prov.Split(' ')[0]; 
+                int spaceIdx = prov.IndexOf(' ');
+                string provName = spaceIdx > 0 ? prov.Substring(0, spaceIdx) : prov;
+                
                 AddProvider(provName, pkg, prov);
 
-                // --- NEW: UsrMerge Indexing ---
-                // If a package provides a path, index its aliases immediately
-                if (provName.StartsWith("/"))
+                // --- UsrMerge Indexing ---
+                if (provName.StartsWith('/'))
                 {
                     if (provName.StartsWith("/usr/bin/")) 
-                        AddProvider(provName.Replace("/usr/bin/", "/bin/"), pkg, prov);
+                        AddProvider(string.Concat("/bin/", provName.AsSpan(9)), pkg, prov);
                     else if (provName.StartsWith("/bin/")) 
-                        AddProvider(provName.Replace("/bin/", "/usr/bin/"), pkg, prov);
+                        AddProvider(string.Concat("/usr/bin/", provName.AsSpan(5)), pkg, prov);
                     else if (provName.StartsWith("/usr/sbin/")) 
-                        AddProvider(provName.Replace("/usr/sbin/", "/sbin/"), pkg, prov);
+                        AddProvider(string.Concat("/sbin/", provName.AsSpan(10)), pkg, prov);
                     else if (provName.StartsWith("/sbin/")) 
-                        AddProvider(provName.Replace("/sbin/", "/usr/sbin/"), pkg, prov);
+                        AddProvider(string.Concat("/usr/sbin/", provName.AsSpan(6)), pkg, prov);
                 }
             }
         }
 
-        foreach (var key in _providersMap.Keys.ToList())
+        // In-place sorting reduces list allocations
+        foreach (var list in _providersMap.Values)
         {
-            _providersMap[key] = _providersMap[key]
-                .OrderByDescending(x => x.Pkg.Version, new VersionComparer())
-                .ToList();
+            if (list.Count > 1)
+            {
+                list.Sort((a, b) => VersionComparer.Compare(b.Pkg.Version, a.Pkg.Version));
+            }
         }
     }
 
     private void AddProvider(string name, Package pkg, string provString)
     {
-        if (!_providersMap.ContainsKey(name))
-            _providersMap[name] = new List<(Package, string)>();
+        if (!_providersMap.TryGetValue(name, out var list))
+        {
+            list = new List<(Package, string)>();
+            _providersMap[name] = list;
+        }
             
-        if (!_providersMap[name].Any(x => x.Pkg.Nevra == pkg.Nevra))
-            _providersMap[name].Add((pkg, provString));
+        // Prevent duplicate provisions by the exact same package
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i].Pkg.Nevra == pkg.Nevra) return;
+        }
+        
+        list.Add((pkg, provString));
     }
 
-    // --- NEW: Universal UsrMerge Path Normalizer ---
     private string? FindPathAlias(string requestedPath)
     {
-        // Extract the filename (e.g., "alternatives")
-        string fileName = requestedPath.Split('/').Last();
+        int lastSlash = requestedPath.LastIndexOf('/');
+        if (lastSlash == -1) return null;
 
-        var possiblePaths = new[]
-        {
-            $"/usr/bin/{fileName}",
-            $"/usr/sbin/{fileName}",
-            $"/bin/{fileName}",
-            $"/sbin/{fileName}"
-        };
+        var fileName = requestedPath.Substring(lastSlash + 1);
 
-        foreach (var path in possiblePaths)
-        {
-            if (_providersMap.ContainsKey(path))
-            {
-                return path;
-            }
-        }
+        string p1 = $"/usr/bin/{fileName}";
+        if (_providersMap.ContainsKey(p1)) return p1;
+
+        string p2 = $"/usr/sbin/{fileName}";
+        if (_providersMap.ContainsKey(p2)) return p2;
+
+        string p3 = $"/bin/{fileName}";
+        if (_providersMap.ContainsKey(p3)) return p3;
+
+        string p4 = $"/sbin/{fileName}";
+        if (_providersMap.ContainsKey(p4)) return p4;
+
         return null;
     }
 
@@ -97,19 +112,9 @@ public class DependencySolver
             if (!processedReqs.Add(currentReqStr)) continue;
 
             var req = new RpmRequirement(currentReqStr);
-            
-            bool alreadyInstalled = _installedPackages.Any(p => 
-                p.Name == req.Name && req.IsSatisfiedBy(p, p.Name)
-            );
-            if (alreadyInstalled) continue;
-
-            if (IsSatisfiedByList(req, _installedPackages)) continue;
-            if (IsSatisfiedByList(req, plan)) continue;
-
             string lookupName = req.Name;
             
-            // Apply universal path normalization if it looks like an absolute path
-            if (lookupName.StartsWith("/") && !_providersMap.ContainsKey(lookupName))
+            if (lookupName.StartsWith('/') && !_providersMap.ContainsKey(lookupName))
             {
                 var alias = FindPathAlias(lookupName);
                 if (alias != null)
@@ -120,22 +125,22 @@ public class DependencySolver
 
             if (!_providersMap.TryGetValue(lookupName, out var candidates))
             {
-                if (req.Name.StartsWith("user(") || req.Name.StartsWith("group("))
+                if (lookupName.StartsWith("user(") || lookupName.StartsWith("group("))
                 {
-                    AnsiConsole.MarkupLine($"[grey]Bypassing virtual identity:[/] {req.Name} [grey](Handled by sysusers)[/]");
+                    AnsiConsole.MarkupLine($"[grey]Bypassing virtual identity:[/] {lookupName} [grey](Handled by sysusers)[/]");
                     continue;
                 }
 
-                string requesterInfo = requester != null ? $" (required by [bold]{requester.Name}[/])" : "";
+                string requesterInfo = requester != null ? $" (required by[bold]{requester.Name}[/])" : "";
                 
                 var suggestions = _providersMap.Keys
-                    .Select(k => new { Name = k, Distance = FuzzyMatcher.LevenshteinDistance(req.Name, k) })
+                    .Select(k => new { Name = k, Distance = FuzzyMatcher.LevenshteinDistance(lookupName, k) })
                     .OrderBy(x => x.Distance)
                     .Take(5)
                     .ToList();
 
-                var msg = $"Unresolvable dependency: '{currentReqStr}'{requesterInfo}. No package provides '{req.Name}'.";
-                if (suggestions.Any())
+                var msg = $"Unresolvable dependency: '{currentReqStr}'{requesterInfo}. No package provides '{lookupName}'.";
+                if (suggestions.Count > 0)
                 {
                     msg += "\nDid you mean one of these?";
                     foreach (var s in suggestions) msg += $"\n  - {s.Name} (dist: {s.Distance})";
@@ -144,13 +149,34 @@ public class DependencySolver
                 throw new Exception(msg);
             }
 
-            var validCandidates = candidates.Where(c => req.IsSatisfiedBy(c.Pkg, c.ProvString)).ToList();
+            var validCandidates = new List<(Package Pkg, string ProvStr)>(candidates.Count);
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                var c = candidates[i];
+                if (req.IsSatisfiedBy(c.Pkg, c.ProvString))
+                {
+                    validCandidates.Add(c);
+                }
+            }
 
             if (validCandidates.Count == 0)
             {
                 string reqInfo = requester != null ? $" (required by {requester.Name})" : "";
                 throw new Exception($"Version conflict for '{currentReqStr}'{reqInfo}.");
             }
+
+            // O(1) Check: Has this requirement already been satisfied by an installed package or a package inside our plan?
+            bool alreadyMet = false;
+            for (int i = 0; i < validCandidates.Count; i++)
+            {
+                var c = validCandidates[i];
+                if (_installedPackagesSet.Contains(c.Pkg) || plan.Contains(c.Pkg))
+                {
+                    alreadyMet = true;
+                    break;
+                }
+            }
+            if (alreadyMet) continue; // Bypass adding new packages if a match naturally exists
 
             var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 
@@ -160,36 +186,36 @@ public class DependencySolver
                 {
                     if (childReqStr.StartsWith("rpmlib(")) continue;
 
-                    // --- NEW: Smart Boolean Logic Bypass ---
-                    if (childReqStr.StartsWith("(") && childReqStr.Contains(" if "))
+                    if (childReqStr.StartsWith('(') && childReqStr.Contains(" if "))
                     {
-                        // Example: "(systemd-rpm-macros = 258.5 if rpm-build)"
-                        string clean = childReqStr.Trim('(', ')');
-                        var parts = clean.Split(new[] { " if " }, StringSplitOptions.RemoveEmptyEntries);
+                        var clean = childReqStr.AsSpan().Trim(['(', ')']);
+                        int ifIdx = clean.IndexOf(" if ");
                         
-                        if (parts.Length == 2)
+                        if (ifIdx != -1)
                         {
-                            var conditionPkgName = parts[1].Trim();
+                            var reqPart = clean.Slice(0, ifIdx).Trim();
+                            string conditionPkgName = clean.Slice(ifIdx + 4).Trim().ToString();
 
-                            // Evaluate the condition: Is the 'IF' package going to be on the system?
-                            bool conditionMet = plan.Any(p => p.Name == conditionPkgName) || 
-                                                _installedPackages.Any(p => p.Name == conditionPkgName);
+                            bool conditionMet = false;
+                            foreach (var p in plan) { if (p.Name == conditionPkgName) { conditionMet = true; break; } }
+                            if (!conditionMet)
+                            {
+                                foreach (var p in _installedPackagesSet) { if (p.Name == conditionPkgName) { conditionMet = true; break; } }
+                            }
 
                             if (!conditionMet)
                             {
                                 AnsiConsole.MarkupLine($"[grey]Bypassing conditional:[/] {childReqStr} [grey](Condition '{conditionPkgName}' not met)[/]");
-                                continue; // Skip enqueuing this requirement
+                                continue;
                             }
                             else
                             {
-                                // Condition IS met. Enqueue the left side (the actual requirement)
-                                queue.Enqueue((parts[0].Trim(), chosenPkg));
+                                queue.Enqueue((reqPart.ToString(), chosenPkg));
                                 continue;
                             }
                         }
                     }
 
-                    // For standard requirements or 'OR' logic (which our RpmRequirement handles by trying the first token)
                     queue.Enqueue((childReqStr, chosenPkg));
                 }
             }
@@ -200,52 +226,50 @@ public class DependencySolver
 
     private Package PickBestCandidate(string reqName, List<(Package Pkg, string ProvStr)> candidates)
     {
-        var exactMatch = candidates.FirstOrDefault(c => c.Pkg.Name == reqName);
-        if (exactMatch.Pkg != null) return exactMatch.Pkg;
-
-        var shortestName = candidates.OrderBy(c => c.Pkg.Name.Length).First();
-        return shortestName.Pkg;
-    }
-
-    private bool IsSatisfiedByList(RpmRequirement req, IEnumerable<Package> packages)
-    {
-        foreach (var pkg in packages)
+        for (int i = 0; i < candidates.Count; i++)
         {
-            // 1. Check Name Match (Implicit Provide)
-            // e.g. Requirement 'setup' matches Package 'setup'
-            bool nameMatch = pkg.Name == req.Name;
-            
-            // UsrMerge path aliasing
-            if (!nameMatch && req.Name.StartsWith("/") && pkg.Name.StartsWith("/"))
+            if (candidates[i].Pkg.Name == reqName)
+                return candidates[i].Pkg;
+        }
+
+        var shortest = candidates[0].Pkg;
+        for (int i = 1; i < candidates.Count; i++)
+        {
+            if (candidates[i].Pkg.Name.Length < shortest.Name.Length)
             {
-                nameMatch = req.Name.Split('/').Last() == pkg.Name.Split('/').Last();
-            }
-
-            if (nameMatch && req.IsSatisfiedBy(pkg, pkg.Name)) return true;
-
-            // 2. Check Explicit Provides
-            // e.g. Requirement 'config(setup)' matches Package 'setup' (which provides 'config(setup)')
-            foreach (var prov in pkg.Provides)
-            {
-                var provReq = new RpmRequirement(prov);
-                bool provMatch = provReq.Name == req.Name;
-
-                if (!provMatch && req.Name.StartsWith("/") && provReq.Name.StartsWith("/"))
-                {
-                    provMatch = req.Name.Split('/').Last() == provReq.Name.Split('/').Last();
-                }
-
-                if (provMatch && req.IsSatisfiedBy(pkg, prov)) return true;
+                shortest = candidates[i].Pkg;
             }
         }
-        return false;
+        
+        return shortest;
     }
 
     private List<Package> TopologicalSort(HashSet<Package> unsorted)
     {
-        var result = new List<Package>();
+        var result = new List<Package>(unsorted.Count);
         var visited = new HashSet<string>();
         var tempMark = new HashSet<string>(); 
+
+        // Fast O(1) Dictionary lookup to skip repetitive linear scanning during iteration
+        var planProviders = new Dictionary<string, Package>();
+        foreach (var pkg in unsorted)
+        {
+            planProviders[pkg.Name] = pkg;
+            foreach (var pr in pkg.Provides)
+            {
+                int spaceIdx = pr.IndexOf(' ');
+                string n = spaceIdx > 0 ? pr.Substring(0, spaceIdx) : pr;
+                planProviders[n] = pkg;
+                
+                if (n.StartsWith('/'))
+                {
+                    if (n.StartsWith("/usr/bin/")) planProviders[string.Concat("/bin/", n.AsSpan(9))] = pkg;
+                    else if (n.StartsWith("/bin/")) planProviders[string.Concat("/usr/bin/", n.AsSpan(5))] = pkg;
+                    else if (n.StartsWith("/usr/sbin/")) planProviders[string.Concat("/sbin/", n.AsSpan(10))] = pkg;
+                    else if (n.StartsWith("/sbin/")) planProviders[string.Concat("/usr/sbin/", n.AsSpan(6))] = pkg;
+                }
+            }
+        }
 
         void Visit(Package pkg)
         {
@@ -256,25 +280,41 @@ public class DependencySolver
 
             foreach (var reqStr in pkg.Requires)
             {
-                var reqName = new RpmRequirement(reqStr).Name;
-                var providerInPlan = unsorted.FirstOrDefault(p => 
-                    p.Name == reqName || 
-                    p.Provides.Any(pr => 
-                    {
-                        var n = new RpmRequirement(pr).Name;
-                        if (n == reqName) return true;
-                        
-                        if (n.StartsWith("/") && reqName.StartsWith("/"))
-                        {
-                            return n.Split('/').Last() == reqName.Split('/').Last();
-                        }
-                        return false;
-                    })
-                );
+                if (reqStr.StartsWith("rpmlib(")) continue;
 
-                if (providerInPlan != null)
+                // Span-based fast string parsing eliminates RpmRequirement instantiation
+                string reqName;
+                if (reqStr.StartsWith('(') || reqStr.Contains(' '))
+                {
+                    var span = reqStr.AsSpan().Trim();
+                    if (span.StartsWith('(')) span = span.Slice(1, span.Length - 2).Trim();
+                    int sp = span.IndexOf(' ');
+                    if (sp > 0) span = span.Slice(0, sp);
+                    reqName = span.ToString();
+                }
+                else
+                {
+                    reqName = reqStr;
+                }
+
+                if (planProviders.TryGetValue(reqName, out var providerInPlan))
                 {
                     Visit(providerInPlan);
+                }
+                else if (reqName.StartsWith('/'))
+                {
+                    int lastSlash = reqName.LastIndexOf('/');
+                    if (lastSlash != -1)
+                    {
+                        string fileName = reqName.Substring(lastSlash + 1);
+                        if (planProviders.TryGetValue($"/usr/bin/{fileName}", out providerInPlan) ||
+                            planProviders.TryGetValue($"/bin/{fileName}", out providerInPlan) ||
+                            planProviders.TryGetValue($"/usr/sbin/{fileName}", out providerInPlan) ||
+                            planProviders.TryGetValue($"/sbin/{fileName}", out providerInPlan))
+                        {
+                            Visit(providerInPlan);
+                        }
+                    }
                 }
             }
 
