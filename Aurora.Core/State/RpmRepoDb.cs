@@ -24,6 +24,42 @@ public class RpmRepoDb : IDisposable
         };
     }
 
+    // --- CRITICAL FIX: Reconstruct versioned dependencies from SQLite columns ---
+    private string FormatCapability(string name, string? flags, string? epoch, string? version, string? release)
+    {
+        if (string.IsNullOrEmpty(flags) || string.IsNullOrEmpty(version))
+        {
+            return name;
+        }
+
+        // Convert SQLite flags back to mathematical operators
+        string op = flags switch
+        {
+            "EQ" => "=",
+            "LT" => "<",
+            "GT" => ">",
+            "LE" => "<=",
+            "GE" => ">=",
+            _ => flags
+        };
+
+        if (string.IsNullOrEmpty(op)) return name;
+
+        string fullVersion = version;
+        
+        if (!string.IsNullOrEmpty(release))
+        {
+            fullVersion = $"{version}-{release}";
+        }
+        
+        if (!string.IsNullOrEmpty(epoch) && epoch != "0")
+        {
+            fullVersion = $"{epoch}:{fullVersion}";
+        }
+
+        return $"{name} {op} {fullVersion}";
+    }
+
     public List<Package> GetAllPackages(string repoId)
     {
         var packages = new Dictionary<long, Package>();
@@ -63,22 +99,35 @@ public class RpmRepoDb : IDisposable
             }
         }
 
-        // 2. Fetch Provides
+        // 2. Fetch Provides (Now with Versions!)
         using (var cmd = _connection.CreateCommand())
         {
-            cmd.CommandText = "SELECT pkgKey, name FROM provides";
+            cmd.CommandText = "SELECT pkgKey, name, flags, epoch, version, release FROM provides";
             using var reader = cmd.ExecuteReader();
             int idKey = reader.GetOrdinal("pkgKey");
             int idName = reader.GetOrdinal("name");
+            int idFlags = reader.GetOrdinal("flags");
+            int idEpoch = reader.GetOrdinal("epoch");
+            int idVersion = reader.GetOrdinal("version");
+            int idRelease = reader.GetOrdinal("release");
+
             while (reader.Read())
             {
-                if (packages.TryGetValue(reader.GetInt64(idKey), out var pkg))
-                    pkg.Provides.Add(reader.GetString(idName));
+                long pkgKey = reader.GetInt64(idKey);
+                if (packages.TryGetValue(pkgKey, out var pkg))
+                {
+                    string name = reader.GetString(idName);
+                    string? flags = reader.IsDBNull(idFlags) ? null : reader.GetString(idFlags);
+                    string? epoch = reader.IsDBNull(idEpoch) ? null : reader.GetString(idEpoch);
+                    string? version = reader.IsDBNull(idVersion) ? null : reader.GetString(idVersion);
+                    string? release = reader.IsDBNull(idRelease) ? null : reader.GetString(idRelease);
+
+                    pkg.Provides.Add(FormatCapability(name, flags, epoch, version, release));
+                }
             }
         }
 
-        // 3. Fetch Important Files (NEW)
-        // We load file paths from standard binary directories to satisfy path-based requirements
+        // 3. Fetch Important Files
         using (var cmd = _connection.CreateCommand())
         {
             cmd.CommandText = @"
@@ -92,27 +141,42 @@ public class RpmRepoDb : IDisposable
             using var reader = cmd.ExecuteReader();
             int idKey = reader.GetOrdinal("pkgKey");
             int idName = reader.GetOrdinal("name");
+            
             while (reader.Read())
             {
-                if (packages.TryGetValue(reader.GetInt64(idKey), out var pkg))
+                long pkgKey = reader.GetInt64(idKey);
+                if (packages.TryGetValue(pkgKey, out var pkg))
                 {
-                    // Treat the file path as a virtual provide
                     pkg.Provides.Add(reader.GetString(idName));
                 }
             }
         }
 
-        // 4. Fetch Requires
+        // 4. Fetch Requires (Now with Versions!)
         using (var cmd = _connection.CreateCommand())
         {
-            cmd.CommandText = "SELECT pkgKey, name FROM requires WHERE name NOT LIKE 'rpmlib(%'";
+            cmd.CommandText = "SELECT pkgKey, name, flags, epoch, version, release FROM requires WHERE name NOT LIKE 'rpmlib(%'";
             using var reader = cmd.ExecuteReader();
             int idKey = reader.GetOrdinal("pkgKey");
             int idName = reader.GetOrdinal("name");
+            int idFlags = reader.GetOrdinal("flags");
+            int idEpoch = reader.GetOrdinal("epoch");
+            int idVersion = reader.GetOrdinal("version");
+            int idRelease = reader.GetOrdinal("release");
+
             while (reader.Read())
             {
-                if (packages.TryGetValue(reader.GetInt64(idKey), out var pkg))
-                    pkg.Requires.Add(reader.GetString(idName));
+                long pkgKey = reader.GetInt64(idKey);
+                if (packages.TryGetValue(pkgKey, out var pkg))
+                {
+                    string name = reader.GetString(idName);
+                    string? flags = reader.IsDBNull(idFlags) ? null : reader.GetString(idFlags);
+                    string? epoch = reader.IsDBNull(idEpoch) ? null : reader.GetString(idEpoch);
+                    string? version = reader.IsDBNull(idVersion) ? null : reader.GetString(idVersion);
+                    string? release = reader.IsDBNull(idRelease) ? null : reader.GetString(idRelease);
+
+                    pkg.Requires.Add(FormatCapability(name, flags, epoch, version, release));
+                }
             }
         }
 
