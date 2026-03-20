@@ -16,10 +16,8 @@ public class DependencySolver
         var installedList = installedPackages.ToList();
         _installedPackagesSet = installedList.ToHashSet();
         
-        // Use a large initial capacity to prevent costly re-hashing
         _providersMap = new Dictionary<string, List<(Package, string)>>(100000);
 
-        // Process all packages (available + installed) to build a universal lookup map
         var allPackages = availablePackages.Concat(installedList).DistinctBy(p => p.Nevra);
 
         foreach (var pkg in allPackages)
@@ -33,7 +31,6 @@ public class DependencySolver
                 
                 AddProvider(provName, pkg, prov);
 
-                // --- UsrMerge Indexing ---
                 if (provName.StartsWith('/'))
                 {
                     if (provName.StartsWith("/usr/bin/")) 
@@ -48,12 +45,12 @@ public class DependencySolver
             }
         }
 
-        // In-place sorting reduces list allocations
         foreach (var list in _providersMap.Values)
         {
             if (list.Count > 1)
             {
-                list.Sort((a, b) => VersionComparer.Compare(b.Pkg.Version, a.Pkg.Version));
+                // --- CRITICAL FIX: Sort by FullVersion (not Version) so RPM releases (-10 vs -4) are evaluated properly ---
+                list.Sort((a, b) => VersionComparer.Compare(b.Pkg.FullVersion, a.Pkg.FullVersion));
             }
         }
     }
@@ -66,7 +63,6 @@ public class DependencySolver
             _providersMap[name] = list;
         }
             
-        // Prevent duplicate provisions by the exact same package
         for (int i = 0; i < list.Count; i++)
         {
             if (list[i].Pkg.Nevra == pkg.Nevra) return;
@@ -99,7 +95,8 @@ public class DependencySolver
 
     public List<Package> Resolve(IEnumerable<string> targets)
     {
-        var plan = new HashSet<Package>();
+        // --- CRITICAL FIX: Dictionary prevents HashSet from injecting mixed releases ---
+        var plan = new Dictionary<string, Package>();
         var queue = new Queue<(string ReqStr, Package? Requester)>();
         var processedReqs = new HashSet<string>();
 
@@ -117,10 +114,7 @@ public class DependencySolver
             if (lookupName.StartsWith('/') && !_providersMap.ContainsKey(lookupName))
             {
                 var alias = FindPathAlias(lookupName);
-                if (alias != null)
-                {
-                    lookupName = alias;
-                }
+                if (alias != null) lookupName = alias;
             }
 
             if (!_providersMap.TryGetValue(lookupName, out var candidates))
@@ -131,13 +125,10 @@ public class DependencySolver
                     continue;
                 }
 
-                string requesterInfo = requester != null ? $" (required by[bold]{requester.Name}[/])" : "";
-                
+                string requesterInfo = requester != null ? $" (required by [bold]{requester.Name}[/])" : "";
                 var suggestions = _providersMap.Keys
                     .Select(k => new { Name = k, Distance = FuzzyMatcher.LevenshteinDistance(lookupName, k) })
-                    .OrderBy(x => x.Distance)
-                    .Take(5)
-                    .ToList();
+                    .OrderBy(x => x.Distance).Take(5).ToList();
 
                 var msg = $"Unresolvable dependency: '{currentReqStr}'{requesterInfo}. No package provides '{lookupName}'.";
                 if (suggestions.Count > 0)
@@ -165,22 +156,60 @@ public class DependencySolver
                 throw new Exception($"Version conflict for '{currentReqStr}'{reqInfo}.");
             }
 
-            // O(1) Check: Has this requirement already been satisfied by an installed package or a package inside our plan?
             bool alreadyMet = false;
             for (int i = 0; i < validCandidates.Count; i++)
             {
                 var c = validCandidates[i];
-                if (_installedPackagesSet.Contains(c.Pkg) || plan.Contains(c.Pkg))
+                if (_installedPackagesSet.Contains(c.Pkg))
+                {
+                    alreadyMet = true;
+                    break;
+                }
+                if (plan.TryGetValue(c.Pkg.Name, out var plannedPkg) && plannedPkg.Nevra == c.Pkg.Nevra)
                 {
                     alreadyMet = true;
                     break;
                 }
             }
-            if (alreadyMet) continue; // Bypass adding new packages if a match naturally exists
+            if (alreadyMet) continue; 
 
             var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 
-            if (plan.Add(chosenPkg))
+            // Add or Upgrade in Plan collision detection
+            bool shouldEnqueueChildren = false;
+            if (!plan.TryGetValue(chosenPkg.Name, out var existingPkg))
+            {
+                plan[chosenPkg.Name] = chosenPkg;
+                shouldEnqueueChildren = true;
+            }
+            else if (existingPkg.Nevra != chosenPkg.Nevra)
+            {
+                // Check if existing locked package happens to natively satisfy the new requirement
+                bool existingSatisfies = req.IsSatisfiedBy(existingPkg, existingPkg.Name);
+                if (!existingSatisfies)
+                {
+                    for (int i = 0; i < existingPkg.Provides.Count; i++)
+                    {
+                        if (req.IsSatisfiedBy(existingPkg, existingPkg.Provides[i])) { existingSatisfies = true; break; }
+                    }
+                }
+
+                if (!existingSatisfies)
+                {
+                    if (VersionComparer.Compare(chosenPkg.FullVersion, existingPkg.FullVersion) > 0)
+                    {
+                        plan[chosenPkg.Name] = chosenPkg;
+                        shouldEnqueueChildren = true;
+                    }
+                    else
+                    {
+                        string reqInfo = requester != null ? $" (required by {requester.Name})" : "";
+                        throw new Exception($"Dependency conflict: '{currentReqStr}'{reqInfo} requires {chosenPkg.Name} {chosenPkg.FullVersion}, but {existingPkg.FullVersion} is locked in the plan.");
+                    }
+                }
+            }
+
+            if (shouldEnqueueChildren)
             {
                 foreach (var childReqStr in chosenPkg.Requires)
                 {
@@ -188,7 +217,8 @@ public class DependencySolver
 
                     if (childReqStr.StartsWith('(') && childReqStr.Contains(" if "))
                     {
-                        var clean = childReqStr.AsSpan().Trim(['(', ')']);
+                        // Fixed string array trim
+                        var clean = childReqStr.AsSpan().Trim("()");
                         int ifIdx = clean.IndexOf(" if ");
                         
                         if (ifIdx != -1)
@@ -197,7 +227,7 @@ public class DependencySolver
                             string conditionPkgName = clean.Slice(ifIdx + 4).Trim().ToString();
 
                             bool conditionMet = false;
-                            foreach (var p in plan) { if (p.Name == conditionPkgName) { conditionMet = true; break; } }
+                            foreach (var p in plan.Values) { if (p.Name == conditionPkgName) { conditionMet = true; break; } }
                             if (!conditionMet)
                             {
                                 foreach (var p in _installedPackagesSet) { if (p.Name == conditionPkgName) { conditionMet = true; break; } }
@@ -221,7 +251,7 @@ public class DependencySolver
             }
         }
 
-        return TopologicalSort(plan);
+        return TopologicalSort(plan.Values);
     }
 
     private Package PickBestCandidate(string reqName, List<(Package Pkg, string ProvStr)> candidates)
@@ -244,29 +274,53 @@ public class DependencySolver
         return shortest;
     }
 
-    private List<Package> TopologicalSort(HashSet<Package> unsorted)
+    private List<Package> TopologicalSort(IEnumerable<Package> unsorted)
     {
-        var result = new List<Package>(unsorted.Count);
+        var unsortedList = unsorted.ToList();
+        var result = new List<Package>(unsortedList.Count);
         var visited = new HashSet<string>();
         var tempMark = new HashSet<string>(); 
 
-        // Fast O(1) Dictionary lookup to skip repetitive linear scanning during iteration
         var planProviders = new Dictionary<string, Package>();
-        foreach (var pkg in unsorted)
+        
+        // --- CRITICAL FIX: Pass 1 maps literal package names ---
+        foreach (var pkg in unsortedList)
         {
             planProviders[pkg.Name] = pkg;
+        }
+
+        // --- CRITICAL FIX: Pass 2 maps virtual provides, protecting literal names ---
+        foreach (var pkg in unsortedList)
+        {
             foreach (var pr in pkg.Provides)
             {
                 int spaceIdx = pr.IndexOf(' ');
                 string n = spaceIdx > 0 ? pr.Substring(0, spaceIdx) : pr;
-                planProviders[n] = pkg;
+                
+                if (!planProviders.ContainsKey(n)) planProviders[n] = pkg;
                 
                 if (n.StartsWith('/'))
                 {
-                    if (n.StartsWith("/usr/bin/")) planProviders[string.Concat("/bin/", n.AsSpan(9))] = pkg;
-                    else if (n.StartsWith("/bin/")) planProviders[string.Concat("/usr/bin/", n.AsSpan(5))] = pkg;
-                    else if (n.StartsWith("/usr/sbin/")) planProviders[string.Concat("/sbin/", n.AsSpan(10))] = pkg;
-                    else if (n.StartsWith("/sbin/")) planProviders[string.Concat("/usr/sbin/", n.AsSpan(6))] = pkg;
+                    if (n.StartsWith("/usr/bin/")) 
+                    {
+                        string p = string.Concat("/bin/", n.AsSpan(9));
+                        if (!planProviders.ContainsKey(p)) planProviders[p] = pkg;
+                    }
+                    else if (n.StartsWith("/bin/")) 
+                    {
+                        string p = string.Concat("/usr/bin/", n.AsSpan(5));
+                        if (!planProviders.ContainsKey(p)) planProviders[p] = pkg;
+                    }
+                    else if (n.StartsWith("/usr/sbin/")) 
+                    {
+                        string p = string.Concat("/sbin/", n.AsSpan(10));
+                        if (!planProviders.ContainsKey(p)) planProviders[p] = pkg;
+                    }
+                    else if (n.StartsWith("/sbin/")) 
+                    {
+                        string p = string.Concat("/usr/sbin/", n.AsSpan(6));
+                        if (!planProviders.ContainsKey(p)) planProviders[p] = pkg;
+                    }
                 }
             }
         }
@@ -282,7 +336,6 @@ public class DependencySolver
             {
                 if (reqStr.StartsWith("rpmlib(")) continue;
 
-                // Span-based fast string parsing eliminates RpmRequirement instantiation
                 string reqName;
                 if (reqStr.StartsWith('(') || reqStr.Contains(' '))
                 {
@@ -323,7 +376,7 @@ public class DependencySolver
             result.Add(pkg);
         }
 
-        foreach (var pkg in unsorted)
+        foreach (var pkg in unsortedList)
         {
             if (!visited.Contains(pkg.Name)) Visit(pkg);
         }
