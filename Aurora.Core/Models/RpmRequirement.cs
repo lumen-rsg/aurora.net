@@ -135,7 +135,7 @@ public class RpmRequirement
             }
         }
 
-        int cmp = VersionComparer.Compare(versionToCompare, Version);
+        int cmp = VersionComparer.CompareStatic(versionToCompare, Version);
 
         return Operator switch
         {
