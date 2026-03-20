@@ -27,7 +27,6 @@ public class RpmRequirement
         int opIdx = -1;
         int opLen = 0;
         
-        // Reliably locate the operator even if spaces are completely missing
         for (int i = 0; i < span.Length; i++)
         {
             char c = span[i];
@@ -71,9 +70,10 @@ public class RpmRequirement
 
     public bool IsSatisfiedBy(Package pkg, string providedString)
     {
+        // If the requirement doesn't care about the version, any provide matches
         if (Operator == null) return true;
 
-        string versionToCompare = pkg.FullVersion; 
+        string? versionToCompare = null; 
         var provSpan = providedString.AsSpan().Trim();
         
         int opIdx = -1;
@@ -90,12 +90,38 @@ public class RpmRequirement
             }
         }
 
+        string provName;
         if (opIdx != -1)
         {
+            provName = provSpan.Slice(0, opIdx).TrimEnd().ToString();
             var vSpan = provSpan.Slice(opIdx + opLen).TrimStart();
             int spaceInVersion = vSpan.IndexOf(' ');
             if (spaceInVersion > 0) vSpan = vSpan.Slice(0, spaceInVersion);
             versionToCompare = vSpan.ToString();
+        }
+        else
+        {
+            int spaceIdx = providedString.IndexOf(' ');
+            provName = spaceIdx > 0 ? providedString.Substring(0, spaceIdx) : providedString;
+        }
+
+        if (versionToCompare == null)
+        {
+            // --- CRITICAL RPM RULE FIX ---
+            // Unversioned virtual provides (like "lua(abi)") CANNOT satisfy a versioned requirement.
+            // A provide only inherits the package's version if it is implicitly the package's own Name.
+            bool isImplicit = provName.Equals(pkg.Name, StringComparison.OrdinalIgnoreCase) ||
+                              provName.StartsWith(pkg.Name + "(", StringComparison.OrdinalIgnoreCase);
+
+            if (isImplicit)
+            {
+                versionToCompare = pkg.FullVersion;
+            }
+            else
+            {
+                // It's a virtual provide with no version attached. It automatically fails.
+                return false; 
+            }
         }
 
         if (Version == null) return true;
