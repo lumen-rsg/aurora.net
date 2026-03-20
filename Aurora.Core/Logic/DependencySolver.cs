@@ -8,13 +8,18 @@ namespace Aurora.Core.Logic;
 
 public class DependencySolver
 {
-    private readonly HashSet<Package> _installedPackagesSet;
+    // --- CRITICAL FIX: Track strings instead of C# Objects to prevent reference equality failures ---
+    private readonly HashSet<string> _installedNevras;
+    private readonly HashSet<string> _installedNames;
     private readonly Dictionary<string, List<(Package Pkg, string ProvString)>> _providersMap;
 
     public DependencySolver(IEnumerable<Package> availablePackages, IEnumerable<Package> installedPackages)
     {
         var installedList = installedPackages.ToList();
-        _installedPackagesSet = installedList.ToHashSet();
+        
+        // Fast string lookups for installed packages
+        _installedNevras = installedList.Select(p => p.Nevra).ToHashSet();
+        _installedNames = installedList.Select(p => p.Name).ToHashSet();
         
         _providersMap = new Dictionary<string, List<(Package, string)>>(100000);
 
@@ -49,7 +54,6 @@ public class DependencySolver
         {
             if (list.Count > 1)
             {
-                // --- CRITICAL FIX: Sort by FullVersion (not Version) so RPM releases (-10 vs -4) are evaluated properly ---
                 list.Sort((a, b) => VersionComparer.Compare(b.Pkg.FullVersion, a.Pkg.FullVersion));
             }
         }
@@ -95,7 +99,6 @@ public class DependencySolver
 
     public List<Package> Resolve(IEnumerable<string> targets)
     {
-        // --- CRITICAL FIX: Dictionary prevents HashSet from injecting mixed releases ---
         var plan = new Dictionary<string, Package>();
         var queue = new Queue<(string ReqStr, Package? Requester)>();
         var processedReqs = new HashSet<string>();
@@ -160,11 +163,14 @@ public class DependencySolver
             for (int i = 0; i < validCandidates.Count; i++)
             {
                 var c = validCandidates[i];
-                if (_installedPackagesSet.Contains(c.Pkg))
+                
+                // --- CRITICAL FIX: Evaluate using NEVRA strings, protecting us against repo/local object mismatch ---
+                if (_installedNevras.Contains(c.Pkg.Nevra))
                 {
                     alreadyMet = true;
                     break;
                 }
+                
                 if (plan.TryGetValue(c.Pkg.Name, out var plannedPkg) && plannedPkg.Nevra == c.Pkg.Nevra)
                 {
                     alreadyMet = true;
@@ -175,7 +181,6 @@ public class DependencySolver
 
             var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 
-            // Add or Upgrade in Plan collision detection
             bool shouldEnqueueChildren = false;
             if (!plan.TryGetValue(chosenPkg.Name, out var existingPkg))
             {
@@ -184,7 +189,6 @@ public class DependencySolver
             }
             else if (existingPkg.Nevra != chosenPkg.Nevra)
             {
-                // Check if existing locked package happens to natively satisfy the new requirement
                 bool existingSatisfies = req.IsSatisfiedBy(existingPkg, existingPkg.Name);
                 if (!existingSatisfies)
                 {
@@ -217,7 +221,6 @@ public class DependencySolver
 
                     if (childReqStr.StartsWith('(') && childReqStr.Contains(" if "))
                     {
-                        // Fixed string array trim
                         var clean = childReqStr.AsSpan().Trim("()");
                         int ifIdx = clean.IndexOf(" if ");
                         
@@ -228,9 +231,11 @@ public class DependencySolver
 
                             bool conditionMet = false;
                             foreach (var p in plan.Values) { if (p.Name == conditionPkgName) { conditionMet = true; break; } }
-                            if (!conditionMet)
+                            
+                            // --- CRITICAL FIX: Evaluate conditions instantly using O(1) String Name Set ---
+                            if (!conditionMet && _installedNames.Contains(conditionPkgName))
                             {
-                                foreach (var p in _installedPackagesSet) { if (p.Name == conditionPkgName) { conditionMet = true; break; } }
+                                conditionMet = true;
                             }
 
                             if (!conditionMet)
@@ -283,13 +288,11 @@ public class DependencySolver
 
         var planProviders = new Dictionary<string, Package>();
         
-        // --- CRITICAL FIX: Pass 1 maps literal package names ---
         foreach (var pkg in unsortedList)
         {
             planProviders[pkg.Name] = pkg;
         }
 
-        // --- CRITICAL FIX: Pass 2 maps virtual provides, protecting literal names ---
         foreach (var pkg in unsortedList)
         {
             foreach (var pr in pkg.Provides)
