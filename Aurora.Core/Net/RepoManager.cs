@@ -207,9 +207,6 @@ public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Ac
         
         string fullUrlString = baseUrl + separator + safeRelative;
 
-        // Specter output for Debugging
-        Spectre.Console.AnsiConsole.MarkupLine($"[grey]Network Request: {fullUrlString}[/]");
-
         var fullUri = new Uri(fullUrlString);
 
         if (fullUri.Scheme == "file")
