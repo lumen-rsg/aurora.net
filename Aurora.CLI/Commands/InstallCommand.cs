@@ -15,7 +15,7 @@ public class InstallCommand : ICommand
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {
         if (args.Length < 1) throw new ArgumentException("Usage: install <pkg1> [pkg2] ...");
-        
+
         // 1. Check Mode: Local Files vs Repo Packages
         // For simplicity in V1, we assume if the first arg ends in .rpm, all are files. TODO
         bool isLocalFileMode = args.All(a => a.EndsWith(".rpm"));
@@ -24,16 +24,17 @@ public class InstallCommand : ICommand
         {
             AnsiConsole.MarkupLine($"[blue]Installing {args.Length} local package(s)...[/]");
             if (!config.AssumeYes && !AnsiConsole.Confirm("Proceed with installation?")) return;
-            
+
             // Pass the array of files to RPM
             var fullPaths = args.Select(Path.GetFullPath).ToList();
-            SystemUpdater.ApplyUpdates(fullPaths, config.SysRoot, config.Force, msg => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(msg)}[/]"));
+            SystemUpdater.ApplyUpdates(fullPaths, config.SysRoot, config.Force,
+                msg => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(msg)}[/]"));
             AnsiConsole.MarkupLine($"[green bold]✔ Installed local packages successfully.[/]");
             return;
         }
 
         // --- Repo Install Path ---
-        
+
         // Filter out packages that are already installed (unless --force)
         var installedPkgs = RpmLocalDb.GetInstalledPackages(config.SysRoot);
         var targetsToResolve = new List<string>();
@@ -75,7 +76,7 @@ public class InstallCommand : ICommand
                 try
                 {
                     using var db = new RpmRepoDb(dbFile);
-                    string repoId = Path.GetFileNameWithoutExtension(dbFile); 
+                    string repoId = Path.GetFileNameWithoutExtension(dbFile);
                     var pkgs = db.GetAllPackages(repoId);
                     availablePackages.AddRange(pkgs);
                     loadedCount += pkgs.Count;
@@ -107,17 +108,25 @@ public class InstallCommand : ICommand
         if (!config.AssumeYes && !AnsiConsole.Confirm("Proceed with installation?")) return;
 
         // 4. Download (Parallel)
+        // 4. Download (Parallel)
         var repoMgr = new RepoManager(config.SysRoot) { SkipSignatureCheck = config.SkipGpg };
-        var packagePaths = new System.Collections.Concurrent.ConcurrentBag<string>();
+
+        // --- CRITICAL FIX: Use an array to strictly preserve topological sort order ---
+        var packagePaths = new string[plan.Count];
         var semaphore = new SemaphoreSlim(5);
 
         if (!Directory.Exists(config.CacheDir)) Directory.CreateDirectory(config.CacheDir);
 
         await AnsiConsole.Progress()
-            .Columns(new ProgressColumn[] { new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new DownloadedColumn(), new SpinnerColumn() })
+            .Columns(new ProgressColumn[]
+            {
+                new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new DownloadedColumn(),
+                new SpinnerColumn()
+            })
             .StartAsync(async ctx =>
             {
-                var tasks = plan.Select(async pkg =>
+                // Note the (pkg, index) signature to map tasks safely to the array
+                var tasks = plan.Select(async (pkg, index) =>
                 {
                     await semaphore.WaitAsync();
                     var task = ctx.AddTask($"[grey]{pkg.Name}[/]");
@@ -125,18 +134,29 @@ public class InstallCommand : ICommand
                     {
                         var path = await repoMgr.DownloadPackageAsync(pkg, config.CacheDir, (total, current) =>
                         {
-                            if (total.HasValue) { task.MaxValue = total.Value; task.Value = current; }
+                            if (total.HasValue)
+                            {
+                                task.MaxValue = total.Value;
+                                task.Value = current;
+                            }
                             else task.IsIndeterminate = true;
                         });
+
                         if (path == null) throw new FileNotFoundException($"Package {pkg.Name} not found.");
-                        packagePaths.Add(path);
+
+                        // Maintain the dependency solver's exact sort order!
+                        packagePaths[index] = path;
                     }
                     catch (Exception ex)
                     {
                         AnsiConsole.MarkupLine($"[red]Download failed for {pkg.Name}:[/] {ex.Message}");
                         throw;
                     }
-                    finally { task.StopTask(); semaphore.Release(); }
+                    finally
+                    {
+                        task.StopTask();
+                        semaphore.Release();
+                    }
                 });
                 await Task.WhenAll(tasks);
             });
@@ -145,7 +165,9 @@ public class InstallCommand : ICommand
         AnsiConsole.Write(new Rule("[green]Installing[/]").RuleStyle("grey"));
         try
         {
-            SystemUpdater.ApplyUpdates(packagePaths.ToList(), config.SysRoot, config.Force, msg => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(msg)}[/]"));
+            // Pass the perfectly ordered array to RPM
+            SystemUpdater.ApplyUpdates(packagePaths, config.SysRoot, config.Force,
+                msg => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(msg)}[/]"));
             AnsiConsole.MarkupLine($"\n[green bold]✔ Transaction successful.[/]");
         }
         catch (Exception ex)

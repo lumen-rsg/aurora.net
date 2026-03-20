@@ -50,19 +50,30 @@ public class SystemUpdater
         return plan;
     }
 
-    /// <summary>
+   /// <summary>
     /// Applies the downloaded RPM updates via the native RPM binary.
     /// </summary>
     public static void ApplyUpdates(IEnumerable<string> rpmFilePaths, string sysRoot = "/", bool force = false, Action<string>? logAction = null)
     {
-        var paths = rpmFilePaths.ToList();
+        // Filter out any potential nulls from the array
+        var paths = rpmFilePaths.Where(p => !string.IsNullOrEmpty(p)).ToList();
         if (paths.Count == 0) return;
 
         logAction?.Invoke("Handing over transaction to RPM...");
 
-        // -U: Upgrade (Installs if not present, upgrades if present, removes old version)
-        // -v: Verbose
-        // -h: Print hash marks (progress)
+        // --- CRITICAL FIX: Prevent Host Seed Contamination ---
+        // If the sysroot was seeded with a host OS (like Ubuntu) to provide an initial /bin/sh,
+        // it contains a stale ld.so.cache. This forces the new dynamically linked binaries 
+        // to incorrectly load the host's older libc.so.6. We must drop it.
+        if (sysRoot != "/")
+        {
+            var ldCachePath = Path.Combine(sysRoot, "etc", "ld.so.cache");
+            if (File.Exists(ldCachePath))
+            {
+                try { File.Delete(ldCachePath); } catch { /* Ignore locked files */ }
+            }
+        }
+
         var args = new List<string> { "-Uvh" };
         
         if (sysRoot != "/")
@@ -76,7 +87,6 @@ public class SystemUpdater
             args.Add("--force");
         }
         
-        // Wrap paths in quotes to prevent shell injection/spacing issues
         args.AddRange(paths.Select(p => $"\"{p}\""));
 
         var psi = new ProcessStartInfo
@@ -89,10 +99,14 @@ public class SystemUpdater
             CreateNoWindow = true
         };
 
+        // --- CRITICAL FIX: Environment Isolation ---
+        // Prevent host paths from poisoning the chroot's script execution environment
+        psi.Environment.Remove("LD_LIBRARY_PATH");
+        psi.Environment.Remove("LD_PRELOAD");
+
         using var process = Process.Start(psi);
         if (process == null) throw new Exception("Failed to start RPM process.");
 
-        // Stream output live to the CLI
         process.OutputDataReceived += (s, e) => 
         { 
             if (!string.IsNullOrWhiteSpace(e.Data)) logAction?.Invoke(e.Data); 
@@ -112,4 +126,5 @@ public class SystemUpdater
             throw new Exception($"RPM transaction failed with exit code {process.ExitCode}. System state is protected by RPM rollback.");
         }
     }
+    
 }
