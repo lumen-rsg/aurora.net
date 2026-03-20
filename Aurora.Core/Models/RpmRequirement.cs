@@ -28,36 +28,28 @@ public class RpmRequirement
         if (firstSpace == -1)
         {
             Name = span.ToString();
+            return;
         }
-        else
-        {
-            Name = span.Slice(0, firstSpace).ToString();
-            var rest = span.Slice(firstSpace + 1).TrimStart();
-            
-            int secondSpace = rest.IndexOf(' ');
-            if (secondSpace != -1)
-            {
-                var opSpan = rest.Slice(0, secondSpace);
-                if (IsVersionOperator(opSpan))
-                {
-                    var afterOp = rest.Slice(secondSpace + 1).TrimStart();
-                    if (!afterOp.IsEmpty)
-                    {
-                        // Supports fallback behavior for things like: "pkgA >= 1.0 or pkgB"
-                        int thirdSpace = afterOp.IndexOf(' ');
-                        var versionSpan = thirdSpace == -1 ? afterOp : afterOp.Slice(0, thirdSpace);
-                        
-                        Operator = opSpan.ToString();
-                        Version = versionSpan.ToString();
-                    }
-                }
-            }
-        }
-    }
 
-    private static bool IsVersionOperator(ReadOnlySpan<char> op)
-    {
-        return op is ">=" or "<=" or "=" or ">" or "<" or "==" or "!=";
+        Name = span.Slice(0, firstSpace).ToString();
+        var rest = span.Slice(firstSpace + 1).TrimStart();
+        
+        int opLength = 0;
+        if (rest.StartsWith(">=") || rest.StartsWith("<=") || rest.StartsWith("==") || rest.StartsWith("!=")) opLength = 2;
+        else if (rest.StartsWith(">") || rest.StartsWith("<") || rest.StartsWith("=")) opLength = 1;
+        
+        if (opLength > 0)
+        {
+            Operator = rest.Slice(0, opLength).ToString();
+            var versionSpan = rest.Slice(opLength).TrimStart();
+            
+            int spaceInVersion = versionSpan.IndexOf(' ');
+            if (spaceInVersion > 0)
+            {
+                versionSpan = versionSpan.Slice(0, spaceInVersion);
+            }
+            Version = versionSpan.ToString();
+        }
     }
 
     public bool IsSatisfiedBy(Package pkg, string providedString)
@@ -65,27 +57,24 @@ public class RpmRequirement
         if (Operator == null) return true;
 
         string versionToCompare = pkg.FullVersion; 
-
-        // Quickly extract inline version overrides without generating Arrays via .Split()
         var provSpan = providedString.AsSpan().Trim();
+        
         int firstSpace = provSpan.IndexOf(' ');
         if (firstSpace != -1)
         {
             var rest = provSpan.Slice(firstSpace + 1).TrimStart();
-            int secondSpace = rest.IndexOf(' ');
-            if (secondSpace != -1)
+            
+            int opLength = 0;
+            if (rest.StartsWith(">=") || rest.StartsWith("<=") || rest.StartsWith("==") || rest.StartsWith("!=")) opLength = 2;
+            else if (rest.StartsWith(">") || rest.StartsWith("<") || rest.StartsWith("=")) opLength = 1;
+            
+            if (opLength > 0)
             {
-                var opSpan = rest.Slice(0, secondSpace);
-                if (IsVersionOperator(opSpan))
-                {
-                    var afterOp = rest.Slice(secondSpace + 1).TrimStart();
-                    if (!afterOp.IsEmpty)
-                    {
-                        int thirdSpace = afterOp.IndexOf(' ');
-                        var versionSpan = thirdSpace == -1 ? afterOp : afterOp.Slice(0, thirdSpace);
-                        versionToCompare = versionSpan.ToString();
-                    }
-                }
+                var vSpan = rest.Slice(opLength).TrimStart();
+                int spaceInVersion = vSpan.IndexOf(' ');
+                if (spaceInVersion > 0) vSpan = vSpan.Slice(0, spaceInVersion);
+                
+                versionToCompare = vSpan.ToString();
             }
         }
 

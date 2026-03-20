@@ -8,7 +8,6 @@ namespace Aurora.Core.Logic;
 
 public class DependencySolver
 {
-    // --- CRITICAL FIX: Track strings instead of C# Objects to prevent reference equality failures ---
     private readonly HashSet<string> _installedNevras;
     private readonly HashSet<string> _installedNames;
     private readonly Dictionary<string, List<(Package Pkg, string ProvString)>> _providersMap;
@@ -17,7 +16,6 @@ public class DependencySolver
     {
         var installedList = installedPackages.ToList();
         
-        // Fast string lookups for installed packages
         _installedNevras = installedList.Select(p => p.Nevra).ToHashSet();
         _installedNames = installedList.Select(p => p.Name).ToHashSet();
         
@@ -38,14 +36,10 @@ public class DependencySolver
 
                 if (provName.StartsWith('/'))
                 {
-                    if (provName.StartsWith("/usr/bin/")) 
-                        AddProvider(string.Concat("/bin/", provName.AsSpan(9)), pkg, prov);
-                    else if (provName.StartsWith("/bin/")) 
-                        AddProvider(string.Concat("/usr/bin/", provName.AsSpan(5)), pkg, prov);
-                    else if (provName.StartsWith("/usr/sbin/")) 
-                        AddProvider(string.Concat("/sbin/", provName.AsSpan(10)), pkg, prov);
-                    else if (provName.StartsWith("/sbin/")) 
-                        AddProvider(string.Concat("/usr/sbin/", provName.AsSpan(6)), pkg, prov);
+                    if (provName.StartsWith("/usr/bin/")) AddProvider(string.Concat("/bin/", provName.AsSpan(9)), pkg, prov);
+                    else if (provName.StartsWith("/bin/")) AddProvider(string.Concat("/usr/bin/", provName.AsSpan(5)), pkg, prov);
+                    else if (provName.StartsWith("/usr/sbin/")) AddProvider(string.Concat("/sbin/", provName.AsSpan(10)), pkg, prov);
+                    else if (provName.StartsWith("/sbin/")) AddProvider(string.Concat("/usr/sbin/", provName.AsSpan(6)), pkg, prov);
                 }
             }
         }
@@ -84,13 +78,10 @@ public class DependencySolver
 
         string p1 = $"/usr/bin/{fileName}";
         if (_providersMap.ContainsKey(p1)) return p1;
-
         string p2 = $"/usr/sbin/{fileName}";
         if (_providersMap.ContainsKey(p2)) return p2;
-
         string p3 = $"/bin/{fileName}";
         if (_providersMap.ContainsKey(p3)) return p3;
-
         string p4 = $"/sbin/{fileName}";
         if (_providersMap.ContainsKey(p4)) return p4;
 
@@ -124,7 +115,7 @@ public class DependencySolver
             {
                 if (lookupName.StartsWith("user(") || lookupName.StartsWith("group("))
                 {
-                    AnsiConsole.MarkupLine($"[grey]Bypassing virtual identity:[/] {lookupName} [grey](Handled by sysusers)[/]");
+                    AnsiConsole.MarkupLine($"[grey]Bypassing virtual identity:[/] {lookupName}[grey](Handled by sysusers)[/]");
                     continue;
                 }
 
@@ -159,25 +150,18 @@ public class DependencySolver
                 throw new Exception($"Version conflict for '{currentReqStr}'{reqInfo}.");
             }
 
-            bool alreadyMet = false;
+            // --- CRITICAL FIX: Only short-circuit if the package is physically installed on the OS ---
+            // Relying on plan-matches caused sub-optimal virtual providers to be chosen
+            bool installedMet = false;
             for (int i = 0; i < validCandidates.Count; i++)
             {
-                var c = validCandidates[i];
-                
-                // --- CRITICAL FIX: Evaluate using NEVRA strings, protecting us against repo/local object mismatch ---
-                if (_installedNevras.Contains(c.Pkg.Nevra))
+                if (_installedNevras.Contains(validCandidates[i].Pkg.Nevra))
                 {
-                    alreadyMet = true;
-                    break;
-                }
-                
-                if (plan.TryGetValue(c.Pkg.Name, out var plannedPkg) && plannedPkg.Nevra == c.Pkg.Nevra)
-                {
-                    alreadyMet = true;
+                    installedMet = true;
                     break;
                 }
             }
-            if (alreadyMet) continue; 
+            if (installedMet) continue; 
 
             var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 
@@ -231,12 +215,7 @@ public class DependencySolver
 
                             bool conditionMet = false;
                             foreach (var p in plan.Values) { if (p.Name == conditionPkgName) { conditionMet = true; break; } }
-                            
-                            // --- CRITICAL FIX: Evaluate conditions instantly using O(1) String Name Set ---
-                            if (!conditionMet && _installedNames.Contains(conditionPkgName))
-                            {
-                                conditionMet = true;
-                            }
+                            if (!conditionMet && _installedNames.Contains(conditionPkgName)) conditionMet = true;
 
                             if (!conditionMet)
                             {
@@ -267,16 +246,13 @@ public class DependencySolver
                 return candidates[i].Pkg;
         }
 
-        var shortest = candidates[0].Pkg;
-        for (int i = 1; i < candidates.Count; i++)
-        {
-            if (candidates[i].Pkg.Name.Length < shortest.Name.Length)
-            {
-                shortest = candidates[i].Pkg;
-            }
-        }
+        // --- CRITICAL FIX: Enforce deterministic resolution via distance to requested name ---
+        // This ensures explicitly named packages (lua5.1) beat ambiguous dependencies (luajit) 
+        var closest = candidates.OrderBy(c => FuzzyMatcher.LevenshteinDistance(reqName, c.Pkg.Name))
+                                .ThenBy(c => c.Pkg.Name.Length)
+                                .First().Pkg;
         
-        return shortest;
+        return closest;
     }
 
     private List<Package> TopologicalSort(IEnumerable<Package> unsorted)
@@ -288,10 +264,7 @@ public class DependencySolver
 
         var planProviders = new Dictionary<string, Package>();
         
-        foreach (var pkg in unsortedList)
-        {
-            planProviders[pkg.Name] = pkg;
-        }
+        foreach (var pkg in unsortedList) planProviders[pkg.Name] = pkg;
 
         foreach (var pkg in unsortedList)
         {
