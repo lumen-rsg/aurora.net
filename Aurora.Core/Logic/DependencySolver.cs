@@ -146,6 +146,16 @@ public class DependencySolver
                 
                 throw new Exception(msg);
             }
+            
+            // --- DEBUG START ---
+            // We only print for interesting requirements to avoid spam
+            bool debug = currentReqStr.Contains("lua") || currentReqStr.Contains("libuv") || lookupName.Contains("abi");
+            if (debug) 
+            {
+                AnsiConsole.MarkupLine($"[bold blue]DEBUG:[/] Resolving: [yellow]{currentReqStr}[/]");
+                if (requester != null) AnsiConsole.MarkupLine($"      Requested by: [grey]{requester.Nevra}[/]");
+            }
+            // --- DEBUG END ---
 
             var validCandidates = new List<(Package Pkg, string ProvStr)>(candidates.Count);
             for (int i = 0; i < candidates.Count; i++)
