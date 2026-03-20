@@ -61,7 +61,7 @@ public class DependencySolver
         {
             if (list.Count > 1)
             {
-                list.Sort((a, b) => VersionComparer.CompareStatic(b.Pkg.FullVersion, a.Pkg.FullVersion));
+                list.Sort((a, b) => VersionComparer.Compare(b.Pkg.FullVersion, a.Pkg.FullVersion));
             }
         }
     }
@@ -198,7 +198,7 @@ public class DependencySolver
 
                 if (!existingSatisfies)
                 {
-                    if (VersionComparer.CompareStatic(chosenPkg.FullVersion, existingPkg.FullVersion) > 0)
+                    if (VersionComparer.Compare(chosenPkg.FullVersion, existingPkg.FullVersion) > 0)
                     {
                         plan[chosenPkg.Name] = chosenPkg;
                         shouldEnqueueChildren = true;

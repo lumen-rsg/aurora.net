@@ -57,7 +57,7 @@ public class DependencyRequest
             }
         }
 
-        int cmp = VersionComparer.CompareStatic(candidateVer, requiredVer);
+        int cmp = VersionComparer.Compare(candidateVer, requiredVer);
 
         return Operator switch
         {
@@ -89,7 +89,7 @@ public class DependencyRequest
             }
         }
 
-        int cmp = VersionComparer.CompareStatic(myVer, otherVer);
+        int cmp = VersionComparer.Compare(myVer, otherVer);
 
         return other.Operator switch
         {
