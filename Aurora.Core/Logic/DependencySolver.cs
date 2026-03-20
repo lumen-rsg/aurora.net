@@ -29,8 +29,21 @@ public class DependencySolver
 
             foreach (var prov in pkg.Provides)
             {
-                int spaceIdx = prov.IndexOf(' ');
-                string provName = spaceIdx > 0 ? prov.Substring(0, spaceIdx) : prov;
+                // Rely on the fixed scanner to correctly isolate "lua(abi)" from "lua(abi)=5.1"
+                string provName;
+                int opIdx = -1;
+                for (int i = 0; i < prov.Length; i++)
+                {
+                    char c = prov[i];
+                    if (c == '>' || c == '<' || c == '=' || c == '!') { opIdx = i; break; }
+                }
+                
+                if (opIdx != -1) provName = prov.Substring(0, opIdx).TrimEnd();
+                else 
+                {
+                    int sp = prov.IndexOf(' ');
+                    provName = sp > 0 ? prov.Substring(0, sp) : prov;
+                }
                 
                 AddProvider(provName, pkg, prov);
 
@@ -246,13 +259,19 @@ public class DependencySolver
                 return candidates[i].Pkg;
         }
 
-        // --- CRITICAL FIX: Enforce deterministic resolution via distance to requested name ---
-        // This ensures explicitly named packages (lua5.1) beat ambiguous dependencies (luajit) 
-        var closest = candidates.OrderBy(c => FuzzyMatcher.LevenshteinDistance(reqName, c.Pkg.Name))
-                                .ThenBy(c => c.Pkg.Name.Length)
-                                .First().Pkg;
-        
-        return closest;
+        string baseName = reqName;
+        int parenIdx = baseName.IndexOf('(');
+        if (parenIdx > 0) baseName = baseName.Substring(0, parenIdx);
+
+        // Score based approach ensuring matching base names + highest version wins ties
+        // This guarantees `lua5.1` beats `luajit` for `lua(abi)`
+        var sorted = candidates.OrderByDescending(c => c.Pkg.Name.StartsWith(baseName) ? 2 : (c.Pkg.Name.Contains(baseName) ? 1 : 0))
+            .ThenBy(c => FuzzyMatcher.LevenshteinDistance(baseName, c.Pkg.Name))
+            .ThenBy(c => c.Pkg.Name.Length)
+            .ThenByDescending(c => c.Pkg.FullVersion, new VersionComparer())
+            .ToList();
+
+        return sorted[0].Pkg;
     }
 
     private List<Package> TopologicalSort(IEnumerable<Package> unsorted)
@@ -264,17 +283,43 @@ public class DependencySolver
 
         var planProviders = new Dictionary<string, Package>();
         
-        foreach (var pkg in unsortedList) planProviders[pkg.Name] = pkg;
+        // Pass 1: Map explicit package names first so they take absolute priority over virtual provides
+        foreach (var pkg in unsortedList)
+        {
+            planProviders[pkg.Name] = pkg;
+        }
 
+        // Pass 2: Map virtual provides and path aliases safely
         foreach (var pkg in unsortedList)
         {
             foreach (var pr in pkg.Provides)
             {
-                int spaceIdx = pr.IndexOf(' ');
-                string n = spaceIdx > 0 ? pr.Substring(0, spaceIdx) : pr;
+                // Safely extract the provide name ignoring version operators
+                int opIdx = -1;
+                for (int i = 0; i < pr.Length; i++)
+                {
+                    char c = pr[i];
+                    if (c == '>' || c == '<' || c == '=' || c == '!') 
+                    { 
+                        opIdx = i; 
+                        break; 
+                    }
+                }
+                
+                string n;
+                if (opIdx != -1)
+                {
+                    n = pr.Substring(0, opIdx).TrimEnd();
+                }
+                else
+                {
+                    int spaceIdx = pr.IndexOf(' ');
+                    n = spaceIdx > 0 ? pr.Substring(0, spaceIdx) : pr;
+                }
                 
                 if (!planProviders.ContainsKey(n)) planProviders[n] = pkg;
                 
+                // UsrMerge path aliasing
                 if (n.StartsWith('/'))
                 {
                     if (n.StartsWith("/usr/bin/")) 
@@ -304,7 +349,7 @@ public class DependencySolver
         void Visit(Package pkg)
         {
             if (visited.Contains(pkg.Name)) return;
-            if (tempMark.Contains(pkg.Name)) return; 
+            if (tempMark.Contains(pkg.Name)) return; // Prevent circular dependency stack overflow
 
             tempMark.Add(pkg.Name);
 
@@ -312,19 +357,9 @@ public class DependencySolver
             {
                 if (reqStr.StartsWith("rpmlib(")) continue;
 
-                string reqName;
-                if (reqStr.StartsWith('(') || reqStr.Contains(' '))
-                {
-                    var span = reqStr.AsSpan().Trim();
-                    if (span.StartsWith('(')) span = span.Slice(1, span.Length - 2).Trim();
-                    int sp = span.IndexOf(' ');
-                    if (sp > 0) span = span.Slice(0, sp);
-                    reqName = span.ToString();
-                }
-                else
-                {
-                    reqName = reqStr;
-                }
+                // Let the robust RpmRequirement class extract the name reliably 
+                // so we don't accidentally try to lookup "lua(abi)=5.1" instead of "lua(abi)"
+                var reqName = new RpmRequirement(reqStr).Name;
 
                 if (planProviders.TryGetValue(reqName, out var providerInPlan))
                 {
@@ -352,6 +387,7 @@ public class DependencySolver
             result.Add(pkg);
         }
 
+        // Initiate Deep First Search for topological sorting
         foreach (var pkg in unsortedList)
         {
             if (!visited.Contains(pkg.Name)) Visit(pkg);
