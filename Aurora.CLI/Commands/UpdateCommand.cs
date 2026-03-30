@@ -116,14 +116,31 @@ public class UpdateCommand : ICommand
 
         // Install
         AnsiConsole.Write(new Rule("[green]Applying Updates[/]").RuleStyle("grey"));
+        
+        List<string> rpmLogs = new List<string>();
         try
         {
-            SystemUpdater.ApplyUpdates(packagePaths.ToList(), config.SysRoot, config.Force, msg => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(msg)}[/]"));
-            AnsiConsole.MarkupLine("[green bold]✔ System updated successfully.[/]");
+            AnsiConsole.Status().Start("[cyan]Applying updates...[/]", ctx => 
+            {
+                SystemUpdater.ApplyUpdates(packagePaths.ToList(), config.SysRoot, config.Force, 
+                    msg => rpmLogs.Add(msg));
+            });
+            
+            AnsiConsole.MarkupLine("\n[green bold]✔ System updated successfully.[/]");
         }
         catch (Exception ex)
         {
             AnsiConsole.MarkupLine($"[red bold]Update Failed:[/] {Markup.Escape(ex.Message)}");
+            
+            // Only show RPM logs on error - helpful for debugging
+            if (rpmLogs.Count > 0)
+            {
+                AnsiConsole.Write(new Rule("[yellow]RPM Output[/]").RuleStyle("yellow"));
+                foreach (var log in rpmLogs)
+                {
+                    AnsiConsole.MarkupLine($"[grey]{Markup.Escape(log)}[/]");
+                }
+            }
         }
     }
 

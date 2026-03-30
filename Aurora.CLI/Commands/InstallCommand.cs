@@ -15,6 +15,7 @@ public class InstallCommand : ICommand
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {
         if (args.Length < 1) throw new ArgumentException("Usage: install <pkg1> [pkg2] ...");
+        List<string> rpmLogs = new List<string>();
 
         // 1. Check Mode: Local Files vs Repo Packages
         // For simplicity in V1, we assume if the first arg ends in .rpm, all are files. TODO
@@ -27,9 +28,26 @@ public class InstallCommand : ICommand
 
             // Pass the array of files to RPM
             var fullPaths = args.Select(Path.GetFullPath).ToList();
-            SystemUpdater.ApplyUpdates(fullPaths, config.SysRoot, config.Force,
-                msg => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(msg)}[/]"));
-            AnsiConsole.MarkupLine($"[green bold]✔ Installed local packages successfully.[/]");
+            
+            try
+            {
+                AnsiConsole.Status().Start("[cyan]Installing packages...[/]", ctx => 
+                {
+                    SystemUpdater.ApplyUpdates(fullPaths, config.SysRoot, config.Force,
+                        msg => rpmLogs.Add(msg));
+                });
+                AnsiConsole.MarkupLine($"[green bold]✔ Installed local packages successfully.[/]");
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red bold]Installation Failed:[/] {Markup.Escape(ex.Message)}");
+                if (rpmLogs.Count > 0)
+                {
+                    AnsiConsole.Write(new Rule("[yellow]RPM Output[/]").RuleStyle("yellow"));
+                    rpmLogs.ForEach(log => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(log)}[/]"));
+                }
+                throw;
+            }
             return;
         }
 
@@ -163,16 +181,30 @@ public class InstallCommand : ICommand
 
         // 5. Execute
         AnsiConsole.Write(new Rule("[green]Installing[/]").RuleStyle("grey"));
+        
         try
         {
-            // Pass the perfectly ordered array to RPM
-            SystemUpdater.ApplyUpdates(packagePaths, config.SysRoot, config.Force,
-                msg => AnsiConsole.MarkupLine($"[grey]{Markup.Escape(msg)}[/]"));
+            AnsiConsole.Status().Start("[cyan]Installing packages...[/]", ctx => 
+            {
+                // Pass the perfectly ordered array to RPM, collecting logs silently
+                SystemUpdater.ApplyUpdates(packagePaths, config.SysRoot, config.Force,
+                    msg => rpmLogs.Add(msg));
+            });
             AnsiConsole.MarkupLine($"\n[green bold]✔ Transaction successful.[/]");
         }
         catch (Exception ex)
         {
             AnsiConsole.MarkupLine($"[red bold]Installation Failed:[/] {Markup.Escape(ex.Message)}");
+            
+            // Only show RPM logs on error - helpful for debugging
+            if (rpmLogs.Count > 0)
+            {
+                AnsiConsole.Write(new Rule("[yellow]RPM Output[/]").RuleStyle("yellow"));
+                foreach (var log in rpmLogs)
+                {
+                    AnsiConsole.MarkupLine($"[grey]{Markup.Escape(log)}[/]");
+                }
+            }
         }
     }
 
