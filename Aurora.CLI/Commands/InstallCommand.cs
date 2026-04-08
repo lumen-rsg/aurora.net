@@ -108,15 +108,33 @@ public class InstallCommand : ICommand
 
         AnsiConsole.MarkupLine($"[grey]Loaded {loadedCount} packages from {repoFiles.Length} repositories.[/]");
 
-        // 2. Resolve Dependencies (Pass the list!)
+        // 2. Resolve Dependencies
         List<Package> plan;
+        var sw = Stopwatch.StartNew();
         try
         {
             var solver = new DependencySolver(availablePackages, installedPkgs);
-            plan = solver.Resolve(targetsToResolve); // <--- Passing List<string>
+
+            int resolvedCount = 0;
+            plan = AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots2)
+                .Start($"[cyan]Resolving dependencies...[/]", ctx =>
+                {
+                    var result = solver.Resolve(targetsToResolve, (count, name) =>
+                    {
+                        resolvedCount = count;
+                        ctx.Status($"[cyan]Resolving dependencies...[/] [grey]({count} resolved)[/]");
+                    });
+                    return result;
+                });
+
+            sw.Stop();
+            AnsiConsole.MarkupLine(
+                $"[green bold]✔[/] Resolved [bold]{plan.Count}[/] packages in [grey]{sw.Elapsed.TotalSeconds:F1}s[/]");
         }
         catch (Exception ex)
         {
+            sw.Stop();
             AnsiConsole.MarkupLine($"[red bold]Dependency Error:[/] {Markup.Escape(ex.Message)}");
             return;
         }
