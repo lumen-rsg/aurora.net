@@ -14,37 +14,15 @@ public class UpdateCommand : ICommand
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {
-        if (!Directory.Exists(config.RepoDir))
-        {
-            AnsiConsole.MarkupLine($"[red]No repository directory found at {config.RepoDir}.[/]");
-            return;
-        }
-
-        var repoFiles = Directory.GetFiles(config.RepoDir, "*.sqlite");
+        var repoFiles = RepoLoader.DiscoverRepoDatabases(config.RepoDir);
         if (repoFiles.Length == 0)
         {
             AnsiConsole.MarkupLine($"[red]No repository databases found. Run 'au sync' first.[/]");
             return;
         }
 
-        var availablePackages = new List<Package>();
-
-        await AnsiConsole.Status().StartAsync("Reading repositories...", async ctx =>
-        {
-            foreach (var file in repoFiles)
-            {
-                try
-                {
-                    using var db = new RpmRepoDb(file);
-                    string repoId = Path.GetFileNameWithoutExtension(file); 
-                    availablePackages.AddRange(db.GetAllPackages(repoId));
-                }
-                catch (Exception ex)
-                {
-                    AnsiConsole.MarkupLine($"[yellow]Warning: Failed to parse {Path.GetFileName(file)}: {ex.Message}[/]");
-                }
-            }
-        });
+        var availablePackages = await AnsiConsole.Status().StartAsync("Reading repositories...", _ =>
+            Task.FromResult(RepoLoader.LoadAllPackages(config.RepoDir)));
 
         AnsiConsole.Status().Start("Calculating update plan...", _ => {});
         var updatePlan = SystemUpdater.CalculateUpdates(availablePackages, config.SysRoot);

@@ -308,36 +308,18 @@ public class GroupCommand : ICommand
             return;
         }
 
-        // Load available packages from repo DBs
-        var availablePackages = new List<Package>();
-        var repoFiles = Directory.GetFiles(config.RepoDir, "*.sqlite");
+        // Load available packages from repo DBs (parallel, optimized)
+        var repoFiles = RepoLoader.DiscoverRepoDatabases(config.RepoDir);
         if (repoFiles.Length == 0)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] No repository databases found. Run 'au sync' first.");
             return;
         }
 
-        int loadedCount = 0;
-        await AnsiConsole.Status().StartAsync("Reading repositories...", async ctx =>
-        {
-            foreach (var dbFile in repoFiles)
-            {
-                try
-                {
-                    using var db = new RpmRepoDb(dbFile);
-                    string repoId = Path.GetFileNameWithoutExtension(dbFile);
-                    var pkgs = db.GetAllPackages(repoId);
-                    availablePackages.AddRange(pkgs);
-                    loadedCount += pkgs.Count;
-                }
-                catch (Exception ex)
-                {
-                    AnsiConsole.MarkupLine($"[red]Error reading {Path.GetFileName(dbFile)}:[/] {ex.Message}");
-                }
-            }
-        });
+        var availablePackages = await AnsiConsole.Status().StartAsync("Reading repositories...", _ =>
+            Task.FromResult(RepoLoader.LoadAllPackages(config.RepoDir)));
 
-        AnsiConsole.MarkupLine($"[grey]Loaded {loadedCount} packages from {repoFiles.Length} repositories.[/]");
+        AnsiConsole.MarkupLine($"[grey]Loaded {availablePackages.Count} packages from {repoFiles.Length} repositories.[/]");
 
         // Resolve dependencies
         List<Package> plan;

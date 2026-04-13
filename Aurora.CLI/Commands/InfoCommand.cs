@@ -18,30 +18,20 @@ public class InfoCommand : ICommand
         }
 
         string targetName = args[0];
-        Package? foundPkg = null;
-        string repoName = "";
 
-        // 1. Search across all synced repositories
-        var repoFiles = Directory.GetFiles(config.RepoDir, "*.sqlite");
+        // 1. Load packages indexed by name for fast lookup
+        var repoFiles = RepoLoader.DiscoverRepoDatabases(config.RepoDir);
         if (repoFiles.Length == 0)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] No repository databases found. Run 'au sync' first.");
             return;
         }
 
-        foreach (var dbFile in repoFiles)
-        {
-            using var db = new RpmRepoDb(dbFile);
-            string repoId = Path.GetFileNameWithoutExtension(dbFile); 
-            var pkgs = db.GetAllPackages(repoId);
-            foundPkg = pkgs.FirstOrDefault(p => p.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
-            
-            if (foundPkg != null)
-            {
-                repoName = Path.GetFileNameWithoutExtension(dbFile);
-                break;
-            }
-        }
+        var packagesByName = await AnsiConsole.Status().StartAsync("Reading repositories...", _ =>
+            Task.FromResult(RepoLoader.LoadPackagesByName(config.RepoDir)));
+
+        packagesByName.TryGetValue(targetName, out var candidates);
+        var foundPkg = candidates?.FirstOrDefault();
 
         if (foundPkg == null)
         {
@@ -55,7 +45,7 @@ public class InfoCommand : ICommand
         table.AddRow("[blue]Name[/]", $"[bold]{foundPkg.Name}[/]");
         table.AddRow("[blue]Version[/]", foundPkg.FullVersion);
         table.AddRow("[blue]Arch[/]", foundPkg.Arch);
-        table.AddRow("[blue]Repository[/]", repoName);
+        table.AddRow("[blue]Repository[/]", foundPkg.RepositoryId);
         table.AddRow("[blue]License[/]", foundPkg.License);
         table.AddRow("[blue]URL[/]", $"[link]{foundPkg.Url}[/]");
         table.AddRow("[blue]Download Size[/]", FormatBytes(foundPkg.Size));

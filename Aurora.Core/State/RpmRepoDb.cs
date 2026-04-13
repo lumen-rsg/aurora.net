@@ -16,6 +16,17 @@ public class RpmRepoDb : IDisposable
         _connection = new SqliteConnection($"Data Source={sqliteFilePath};Mode=ReadOnly;");
         _connection.Open();
 
+        // Performance PRAGMAs — read-only workload optimizations
+        using (var pragma = _connection.CreateCommand())
+        {
+            pragma.CommandText = @"
+                PRAGMA cache_size = -64000;
+                PRAGMA mmap_size = 268435456;
+                PRAGMA query_only = true;
+                PRAGMA journal_mode = OFF;";
+            pragma.ExecuteNonQuery();
+        }
+
         _hostArch = RuntimeInformation.ProcessArchitecture switch
         {
             Architecture.X64 => "x86_64",
@@ -99,10 +110,14 @@ public class RpmRepoDb : IDisposable
             }
         }
 
-        // 2. Fetch Provides (Now with Versions!)
+        // 2. Fetch Provides (filtered to loaded packages only — avoids full table scan)
         using (var cmd = _connection.CreateCommand())
         {
-            cmd.CommandText = "SELECT pkgKey, name, flags, epoch, version, release FROM provides";
+            cmd.CommandText = @"
+                SELECT p.pkgKey, p.name, p.flags, p.epoch, p.version, p.release 
+                FROM provides p
+                WHERE p.pkgKey IN (SELECT pkgKey FROM packages WHERE arch = $arch OR arch = 'noarch')";
+            cmd.Parameters.AddWithValue("$arch", _hostArch);
             using var reader = cmd.ExecuteReader();
             int idKey = reader.GetOrdinal("pkgKey");
             int idName = reader.GetOrdinal("name");
@@ -127,16 +142,18 @@ public class RpmRepoDb : IDisposable
             }
         }
 
-        // 3. Fetch Important Files
+        // 3. Fetch Important Files (filtered to loaded packages only — avoids full table scan)
         using (var cmd = _connection.CreateCommand())
         {
             cmd.CommandText = @"
-                SELECT pkgKey, name FROM files 
-                WHERE name LIKE '/usr/bin/%' 
-                   OR name LIKE '/bin/%' 
-                   OR name LIKE '/usr/sbin/%' 
-                   OR name LIKE '/sbin/%'
-                   OR name LIKE '/etc/%'";
+                SELECT f.pkgKey, f.name FROM files f
+                WHERE f.pkgKey IN (SELECT pkgKey FROM packages WHERE arch = $arch OR arch = 'noarch')
+                  AND (f.name LIKE '/usr/bin/%' 
+                   OR f.name LIKE '/bin/%' 
+                   OR f.name LIKE '/usr/sbin/%' 
+                   OR f.name LIKE '/sbin/%'
+                   OR f.name LIKE '/etc/%')";
+            cmd.Parameters.AddWithValue("$arch", _hostArch);
             
             using var reader = cmd.ExecuteReader();
             int idKey = reader.GetOrdinal("pkgKey");
@@ -152,10 +169,15 @@ public class RpmRepoDb : IDisposable
             }
         }
 
-        // 4. Fetch Requires (Now with Versions!)
+        // 4. Fetch Requires (filtered to loaded packages only — avoids full table scan)
         using (var cmd = _connection.CreateCommand())
         {
-            cmd.CommandText = "SELECT pkgKey, name, flags, epoch, version, release FROM requires WHERE name NOT LIKE 'rpmlib(%'";
+            cmd.CommandText = @"
+                SELECT r.pkgKey, r.name, r.flags, r.epoch, r.version, r.release 
+                FROM requires r
+                WHERE r.pkgKey IN (SELECT pkgKey FROM packages WHERE arch = $arch OR arch = 'noarch')
+                  AND r.name NOT LIKE 'rpmlib(%'";
+            cmd.Parameters.AddWithValue("$arch", _hostArch);
             using var reader = cmd.ExecuteReader();
             int idKey = reader.GetOrdinal("pkgKey");
             int idName = reader.GetOrdinal("name");

@@ -20,45 +20,25 @@ public class SearchCommand : ICommand
 
         string query = args[0].ToLowerInvariant();
 
-        // 1. Check for synced repository databases
-        var repoFiles = Directory.GetFiles(config.RepoDir, "*.sqlite");
+        // 1. Load all packages from all repos (parallel, optimized)
+        var repoFiles = RepoLoader.DiscoverRepoDatabases(config.RepoDir);
         if (repoFiles.Length == 0)
         {
             AnsiConsole.MarkupLine("[red]Error:[/] No repository databases found. Run 'au sync' first.");
             return;
         }
 
-        // 2. Load all packages from all repos
-        var allPackages = new List<(Package Pkg, string RepoId)>();
-        int loadedCount = 0;
+        var allPackages = await AnsiConsole.Status().StartAsync("Reading repositories...", _ =>
+            Task.FromResult(RepoLoader.LoadAllPackages(config.RepoDir)));
 
-        await AnsiConsole.Status().StartAsync("Reading repositories...", async ctx =>
-        {
-            foreach (var dbFile in repoFiles)
-            {
-                try
-                {
-                    using var db = new RpmRepoDb(dbFile);
-                    string repoId = Path.GetFileNameWithoutExtension(dbFile);
-                    var pkgs = db.GetAllPackages(repoId);
-                    foreach (var p in pkgs) allPackages.Add((p, repoId));
-                    loadedCount += pkgs.Count;
-                }
-                catch (Exception ex)
-                {
-                    AnsiConsole.MarkupLine($"[red]Error reading {Path.GetFileName(dbFile)}:[/] {ex.Message}");
-                }
-            }
-        });
-
-        AnsiConsole.MarkupLine($"[grey]Loaded {loadedCount} packages from {repoFiles.Length} repositories.[/]");
+        AnsiConsole.MarkupLine($"[grey]Loaded {allPackages.Count} packages from {repoFiles.Length} repositories.[/]");
 
         // 3. Multi-tier search with token-based ranking
         const int fuzzyThreshold = 3; // max Levenshtein distance for fuzzy matches
 
-        var results = new List<(Package Pkg, string RepoId, int Rank)>();
+        var results = new List<(Package Pkg, int Rank)>();
 
-        foreach (var (pkg, repoId) in allPackages)
+        foreach (var pkg in allPackages)
         {
             string nameLower = pkg.Name.ToLowerInvariant();
             int rank;
@@ -96,7 +76,7 @@ public class SearchCommand : ICommand
                 }
             }
 
-            results.Add((pkg, repoId, rank));
+            results.Add((pkg, rank));
         }
 
         // 4. Deduplicate by name (keep best rank, then highest version)
@@ -126,7 +106,7 @@ public class SearchCommand : ICommand
         table.AddColumn("Repository");
         table.AddColumn("Size");
 
-        foreach (var (pkg, repoId, rank) in deduped)
+        foreach (var (pkg, rank) in deduped)
         {
             string nameMarkup = rank switch
             {
@@ -142,7 +122,7 @@ public class SearchCommand : ICommand
                 nameMarkup,
                 $"[grey]{Markup.Escape(pkg.FullVersion)}[/]",
                 pkg.Arch,
-                Markup.Escape(repoId),
+                Markup.Escape(pkg.RepositoryId),
                 FormatBytes(pkg.Size)
             );
         }
