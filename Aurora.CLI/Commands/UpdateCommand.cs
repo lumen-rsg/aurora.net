@@ -1,4 +1,5 @@
 using Aurora.Core.Logic;
+using Aurora.Core.Logging;
 using Aurora.Core.Models;
 using Aurora.Core.Net;
 using Aurora.Core.State;
@@ -127,6 +128,22 @@ public class UpdateCommand : ICommand
             });
             
             AnsiConsole.MarkupLine("\n[green bold]✔ System updated successfully.[/]");
+            
+            // Record in history
+            try
+            {
+                var historyEntries = updatePlan.Select(pair => new HistoryEntry
+                {
+                    Action = "upgrade",
+                    PackageName = pair.NewPkg.Name,
+                    Epoch = pair.NewPkg.Epoch,
+                    OldVersion = pair.OldVer,
+                    NewVersion = pair.NewVer,
+                    Arch = pair.NewPkg.Arch
+                });
+                await TransactionHistory.RecordTransactionAsync(config.DbPath, "update", historyEntries);
+            }
+            catch (Exception histEx) { AuLogger.Error($"Failed to record history: {histEx.Message}"); }
         }
         catch (Exception ex)
         {

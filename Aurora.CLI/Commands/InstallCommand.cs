@@ -3,6 +3,7 @@ using Aurora.Core.Logic;
 using Aurora.Core.Models;
 using Aurora.Core.Net;
 using Aurora.Core.State;
+using Aurora.Core.Logging;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -37,6 +38,20 @@ public class InstallCommand : ICommand
                         msg => rpmLogs.Add(msg));
                 });
                 AnsiConsole.MarkupLine($"[green bold]✔ Installed local packages successfully.[/]");
+                
+                // Record in history
+                try
+                {
+                    var historyEntries = args.Select(a => new HistoryEntry
+                    {
+                        Action = "install",
+                        PackageName = Path.GetFileNameWithoutExtension(a) ?? a,
+                        NewVersion = "local",
+                        Arch = "local"
+                    });
+                    await TransactionHistory.RecordTransactionAsync(config.DbPath, "install", historyEntries);
+                }
+                catch (Exception histEx) { AuLogger.Error($"Failed to record history: {histEx.Message}"); }
             }
             catch (Exception ex)
             {
@@ -209,6 +224,21 @@ public class InstallCommand : ICommand
                     msg => rpmLogs.Add(msg));
             });
             AnsiConsole.MarkupLine($"\n[green bold]✔ Transaction successful.[/]");
+            
+            // Record in history
+            try
+            {
+                var historyEntries = plan.Select(p => new HistoryEntry
+                {
+                    Action = "install",
+                    PackageName = p.Name,
+                    Epoch = p.Epoch,
+                    NewVersion = p.FullVersion,
+                    Arch = p.Arch
+                });
+                await TransactionHistory.RecordTransactionAsync(config.DbPath, "install", historyEntries);
+            }
+            catch (Exception histEx) { AuLogger.Error($"Failed to record history: {histEx.Message}"); }
         }
         catch (Exception ex)
         {
