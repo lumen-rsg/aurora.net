@@ -26,6 +26,7 @@ class Program
             new CleanupCommand(),
             new HistoryCommand(),
             new EditRepoCommand(),
+            new GroupCommand(),
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);

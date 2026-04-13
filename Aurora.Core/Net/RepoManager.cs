@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Aurora.Core.IO;
 using Aurora.Core.Logging;
@@ -126,7 +127,150 @@ public class RepoManager
         }
     }
 
-public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Action<long?, long> onProgress)
+    /// <summary>
+    ///     Synchronizes comps (package group) data from all enabled repositories.
+    ///     Downloads and parses comps.xml, then stores as JSON for fast CLI reads.
+    /// </summary>
+    public async Task SyncCompsAsync(Action<string, string> onProgress)
+    {
+        var reposDir = PathHelper.GetPath(_rootPath, "etc/yum.repos.d");
+        if (!Directory.Exists(reposDir)) return;
+
+        var repos = RepoConfigParser.ParseDirectory(reposDir);
+        if (repos.Count == 0) return;
+
+        var dbDir = PathHelper.GetPath(_rootPath, "var/lib/aurora");
+        Directory.CreateDirectory(dbDir);
+
+        foreach (var repo in repos.Values.Where(r => r.Enabled))
+        {
+            try
+            {
+                // 1. Fetch repomd.xml to find group data location
+                var repomdPath = Path.Combine(dbDir, $"{repo.Id}_repomd_comps.xml");
+                await FetchFile(repo.Url, "repodata/repomd.xml", repomdPath);
+                var xmlContent = await File.ReadAllTextAsync(repomdPath);
+                var groupInfo = RepoMdParser.GetGroupInfo(xmlContent);
+
+                if (groupInfo == null || string.IsNullOrEmpty(groupInfo.Location))
+                {
+                    // No comps data for this repo — that's fine, not all repos have groups
+                    File.Delete(repomdPath);
+                    continue;
+                }
+
+                onProgress(repo.Name, "Downloading comps...");
+
+                // 2. Download the comps file (may be compressed)
+                var compressedCompsPath = Path.Combine(dbDir, $"{repo.Id}_comps.xml.tmp");
+                await FetchFile(repo.Url, groupInfo.Location, compressedCompsPath);
+
+                // 3. Decompress if needed, or use directly
+                var compsXmlPath = Path.Combine(dbDir, $"{repo.Id}_comps.xml");
+                if (groupInfo.Location.EndsWith(".gz") || groupInfo.Location.EndsWith(".bz2") || groupInfo.Location.EndsWith(".zst"))
+                {
+                    await DecompressDatabaseAsync(compressedCompsPath, compsXmlPath);
+                    File.Delete(compressedCompsPath);
+                }
+                else
+                {
+                    File.Move(compressedCompsPath, compsXmlPath, overwrite: true);
+                }
+
+                // 4. Parse comps.xml and store as JSON
+                var compsXml = await File.ReadAllTextAsync(compsXmlPath);
+                var (groups, categories) = CompsParser.Parse(compsXml);
+
+                // Tag each group/category with its repo ID
+                foreach (var g in groups) g.RepoId = repo.Id;
+                foreach (var c in categories) c.RepoId = repo.Id;
+
+                var jsonData = JsonSerializer.Serialize(new CompsData { Groups = groups, Categories = categories },
+                    new JsonSerializerOptions { WriteIndented = true });
+
+                var jsonPath = Path.Combine(dbDir, $"{repo.Id}_comps.json");
+                await File.WriteAllTextAsync(jsonPath, jsonData);
+
+                // Cleanup XML files
+                File.Delete(compsXmlPath);
+                File.Delete(repomdPath);
+
+                onProgress(repo.Name, $"Comps synced ({groups.Count} groups)");
+            }
+            catch (Exception ex)
+            {
+                AuLogger.Error($"Failed to sync comps for '{repo.Name}': {ex.Message}");
+                // Non-fatal: comps sync failure shouldn't block the main sync
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Loads all cached comps data from disk (JSON files produced by SyncCompsAsync).
+    /// </summary>
+    public static List<PackageGroup> LoadAllGroups(string sysRoot)
+    {
+        var dbDir = PathHelper.GetPath(sysRoot, "var/lib/aurora");
+        if (!Directory.Exists(dbDir)) return new List<PackageGroup>();
+
+        var allGroups = new List<PackageGroup>();
+
+        foreach (var jsonFile in Directory.GetFiles(dbDir, "*_comps.json"))
+        {
+            try
+            {
+                var json = File.ReadAllText(jsonFile);
+                var data = JsonSerializer.Deserialize<CompsData>(json);
+                if (data?.Groups != null)
+                    allGroups.AddRange(data.Groups);
+            }
+            catch (Exception ex)
+            {
+                AuLogger.Error($"Failed to load comps from {jsonFile}: {ex.Message}");
+            }
+        }
+
+        return allGroups;
+    }
+
+    /// <summary>
+    ///     Loads all cached categories from disk.
+    /// </summary>
+    public static List<PackageCategory> LoadAllCategories(string sysRoot)
+    {
+        var dbDir = PathHelper.GetPath(sysRoot, "var/lib/aurora");
+        if (!Directory.Exists(dbDir)) return new List<PackageCategory>();
+
+        var allCategories = new List<PackageCategory>();
+
+        foreach (var jsonFile in Directory.GetFiles(dbDir, "*_comps.json"))
+        {
+            try
+            {
+                var json = File.ReadAllText(jsonFile);
+                var data = JsonSerializer.Deserialize<CompsData>(json);
+                if (data?.Categories != null)
+                    allCategories.AddRange(data.Categories);
+            }
+            catch (Exception ex)
+            {
+                AuLogger.Error($"Failed to load comps from {jsonFile}: {ex.Message}");
+            }
+        }
+
+        return allCategories;
+    }
+
+    /// <summary>
+    ///     Serializable container for comps data (groups + categories).
+    /// </summary>
+    private class CompsData
+    {
+        public List<PackageGroup> Groups { get; set; } = new();
+        public List<PackageCategory> Categories { get; set; } = new();
+    }
+
+    public async Task<string?> DownloadPackageAsync(Package pkg, string cacheDir, Action<long?, long> onProgress)
     {
         if (string.IsNullOrEmpty(pkg.LocationHref)) throw new ArgumentException($"Package {pkg.Name} lacks a LocationHref.");
 

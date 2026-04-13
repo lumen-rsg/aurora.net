@@ -64,6 +64,13 @@ public class SyncCommand : ICommand
                 });
             });
 
+        // Sync comps (package groups) data
+        AnsiConsole.MarkupLine("[blue]Syncing package groups...[/]");
+        await repoMgr.SyncCompsAsync((name, status) =>
+        {
+            AnsiConsole.MarkupLine($"  [grey]{name}:[/] {status}");
+        });
+
         AnsiConsole.MarkupLine("[green]Sync complete.[/]");
     }
 }

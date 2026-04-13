@@ -12,6 +12,36 @@ public static class RepoMdParser
         public string Checksum { get; set; } = "";
     }
 
+    public static RepoDataRef? GetGroupInfo(string xmlContent)
+    {
+        using var reader = XmlReader.Create(new StringReader(xmlContent));
+
+        while (reader.ReadToFollowing("data"))
+        {
+            var type = reader.GetAttribute("type");
+            // RPM repos use "group" or "group_gz" for comps data
+            if (type == "group" || type == "group_gz")
+            {
+                var repoRef = new RepoDataRef { Type = type };
+
+                using var subtree = reader.ReadSubtree();
+                while (subtree.Read())
+                {
+                    if (subtree.NodeType == XmlNodeType.Element && subtree.Name == "location")
+                    {
+                        repoRef.Location = subtree.GetAttribute("href") ?? "";
+                    }
+                    else if (subtree.NodeType == XmlNodeType.Element && subtree.Name == "checksum")
+                    {
+                        repoRef.Checksum = subtree.ReadElementContentAsString();
+                    }
+                }
+                return repoRef;
+            }
+        }
+        return null;
+    }
+
     public static RepoDataRef? GetPrimaryDbInfo(string xmlContent)
     {
         using var reader = XmlReader.Create(new StringReader(xmlContent));
