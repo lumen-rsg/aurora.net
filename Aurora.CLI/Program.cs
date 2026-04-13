@@ -25,6 +25,7 @@ class Program
             new SearchCommand(),
             new CleanupCommand(),
             new HistoryCommand(),
+            new EditRepoCommand(),
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);

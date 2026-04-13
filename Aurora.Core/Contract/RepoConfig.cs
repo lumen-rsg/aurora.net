@@ -11,6 +11,9 @@ public class RepoConfig
     public bool GpgCheck { get; set; } = false;
     public string GpgKey { get; set; } = string.Empty;
 
+    // Tracks which .repo file this entry was parsed from (for write-back)
+    public string? SourceFile { get; set; }
+
     // Helper property to maintain compatibility with existing RepoManager logic
     public string Url => BaseUrl;
 }

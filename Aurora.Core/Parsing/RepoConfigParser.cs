@@ -64,10 +64,123 @@ public static class RepoConfigParser
         {
             try {
                 var fileRepos = Parse(File.ReadAllText(file));
-                foreach (var kvp in fileRepos) allRepos[kvp.Key] = kvp.Value;
+                foreach (var kvp in fileRepos)
+                {
+                    kvp.Value.SourceFile = file;
+                    allRepos[kvp.Key] = kvp.Value;
+                }
             } catch { }
         }
         return allRepos;
+    }
+
+    /// <summary>
+    /// Serializes a single RepoConfig to INI-style .repo format text.
+    /// </summary>
+    public static string Serialize(RepoConfig repo)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"[{repo.Id}]");
+        sb.AppendLine($"name={repo.Name}");
+        if (!string.IsNullOrEmpty(repo.BaseUrl))
+            sb.AppendLine($"baseurl={repo.BaseUrl}");
+        sb.AppendLine($"enabled={Convert.ToInt32(repo.Enabled)}");
+        sb.AppendLine($"gpgcheck={Convert.ToInt32(repo.GpgCheck)}");
+        if (!string.IsNullOrEmpty(repo.GpgKey))
+            sb.AppendLine($"gpgkey={repo.GpgKey}");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Writes a collection of repos back to their respective .repo files.
+    /// Repos that share the same SourceFile are written together.
+    /// New repos (no SourceFile) are written to a new file.
+    /// </summary>
+    public static void SaveAllRepos(Dictionary<string, RepoConfig> repos)
+    {
+        // Group by source file
+        var grouped = new Dictionary<string, List<RepoConfig>>();
+        var orphans = new List<RepoConfig>();
+
+        foreach (var repo in repos.Values)
+        {
+            if (!string.IsNullOrEmpty(repo.SourceFile) && File.Exists(repo.SourceFile))
+            {
+                if (!grouped.ContainsKey(repo.SourceFile))
+                    grouped[repo.SourceFile] = new List<RepoConfig>();
+                grouped[repo.SourceFile].Add(repo);
+            }
+            else
+            {
+                orphans.Add(repo);
+            }
+        }
+
+        // Write each group back to its file
+        foreach (var kvp in grouped)
+        {
+            var content = new System.Text.StringBuilder();
+            foreach (var repo in kvp.Value)
+            {
+                content.AppendLine(Serialize(repo));
+            }
+            File.WriteAllText(kvp.Key, content.ToString());
+        }
+
+        // Write orphans to a new file
+        if (orphans.Count > 0)
+        {
+            // Determine directory from existing repos, or fallback
+            string? dir = repos.Values
+                .FirstOrDefault(r => !string.IsNullOrEmpty(r.SourceFile))?.SourceFile;
+            
+            if (dir != null)
+                dir = Path.GetDirectoryName(dir);
+            else
+                dir = "/etc/yum.repos.d";
+
+            var newFile = Path.Combine(dir!, "aurora-custom.repo");
+            var content = new System.Text.StringBuilder();
+            foreach (var repo in orphans)
+            {
+                repo.SourceFile = newFile;
+                content.AppendLine(Serialize(repo));
+            }
+            File.WriteAllText(newFile, content.ToString());
+        }
+    }
+
+    /// <summary>
+    /// Removes a repo by rewriting its source file without it.
+    /// If the file becomes empty, it is deleted.
+    /// </summary>
+    public static void RemoveRepo(Dictionary<string, RepoConfig> allRepos, string repoId)
+    {
+        if (!allRepos.TryGetValue(repoId, out var repo)) return;
+        
+        allRepos.Remove(repoId);
+
+        if (string.IsNullOrEmpty(repo.SourceFile) || !File.Exists(repo.SourceFile))
+            return;
+
+        // Collect remaining repos that belong to the same file
+        var sameFileRepos = allRepos.Values
+            .Where(r => r.SourceFile == repo.SourceFile)
+            .ToList();
+
+        if (sameFileRepos.Count == 0)
+        {
+            File.Delete(repo.SourceFile);
+        }
+        else
+        {
+            var content = new System.Text.StringBuilder();
+            foreach (var r in sameFileRepos)
+            {
+                content.AppendLine(Serialize(r));
+            }
+            File.WriteAllText(repo.SourceFile, content.ToString());
+        }
     }
 
     private static string GetReleaseVer()
