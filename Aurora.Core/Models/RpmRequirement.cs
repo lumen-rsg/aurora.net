@@ -26,11 +26,14 @@ public class RpmRequirement
 
         int opIdx = -1;
         int opLen = 0;
+        int parenDepth = 0;
         
         for (int i = 0; i < span.Length; i++)
         {
             char c = span[i];
-            if (c == '>' || c == '<' || c == '=' || c == '!')
+            if (c == '(') parenDepth++;
+            else if (c == ')') parenDepth--;
+            else if (parenDepth == 0 && (c == '>' || c == '<' || c == '=' || c == '!'))
             {
                 opIdx = i;
                 if (i + 1 < span.Length && span[i + 1] == '=') opLen = 2;
@@ -78,10 +81,13 @@ public class RpmRequirement
         
         int opIdx = -1;
         int opLen = 0;
+        int parenDepth = 0;
         for (int i = 0; i < provSpan.Length; i++)
         {
             char c = provSpan[i];
-            if (c == '>' || c == '<' || c == '=' || c == '!')
+            if (c == '(') parenDepth++;
+            else if (c == ')') parenDepth--;
+            else if (parenDepth == 0 && (c == '>' || c == '<' || c == '=' || c == '!'))
             {
                 opIdx = i;
                 if (i + 1 < provSpan.Length && provSpan[i + 1] == '=') opLen = 2;

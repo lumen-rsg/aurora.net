@@ -184,10 +184,13 @@ public class DependencySolver
     /// </summary>
     public static string ParseProvideName(string provides)
     {
+        var parenDepth = 0;
         for (var i = 0; i < provides.Length; i++)
         {
             var c = provides[i];
-            if (c is '>' or '<' or '=' or '!')
+            if (c == '(') parenDepth++;
+            else if (c == ')') parenDepth--;
+            else if (parenDepth == 0 && c is '>' or '<' or '=' or '!')
                 return provides.Substring(0, i).TrimEnd();
         }
 
