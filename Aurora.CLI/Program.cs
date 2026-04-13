@@ -23,6 +23,7 @@ class Program
             new InitCommand(),
             new InfoCommand(),
             new SearchCommand(),
+            new CleanupCommand(),
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);

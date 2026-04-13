@@ -9,12 +9,12 @@ public static class RpmLocalDb
     {
         var packages = new List<Package>();
         
-        // RPM Query Format: NAME|EPOCH|VERSION|RELEASE|ARCH|SIZE|PROVIDES(space separated)
-        // We use [%{PROVIDES} ] to iterate through all provides and put a space between them.
+        // RPM Query Format: NAME|EPOCH|VERSION|RELEASE|ARCH|SIZE|PROVIDES(space separated)|REQUIRES(space separated)
+        // We use [%{PROVIDES} ] and [%{REQUIRES} ] to iterate through all provides/requires with spaces between them.
         var psi = new ProcessStartInfo
         {
             FileName = "rpm",
-            Arguments = "--root " + sysRoot + " -qa --qf \"%{NAME}|%{EPOCHNUM}|%{VERSION}|%{RELEASE}|%{ARCH}|%{SIZE}|[%{PROVIDES} ]\\n\"",
+            Arguments = "--root " + sysRoot + " -qa --qf \"%{NAME}|%{EPOCHNUM}|%{VERSION}|%{RELEASE}|%{ARCH}|%{SIZE}|[%{PROVIDES} ]|[%{REQUIRES} ]\\n\"",
             RedirectStandardOutput = true,
             UseShellExecute = false,
             CreateNoWindow = true
@@ -44,12 +44,18 @@ public static class RpmLocalDb
                     InstalledSize = long.TryParse(parts[5], out var s) ? s : 0
                 };
 
-                // FIX: Populate Provides from the 7th column
+                // Populate Provides from the 7th column
                 if (parts.Length >= 7 && !string.IsNullOrWhiteSpace(parts[6]))
                 {
-                    // Split the space-separated provides list
                     var providesList = parts[6].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                     pkg.Provides.AddRange(providesList);
+                }
+
+                // Populate Requires from the 8th column
+                if (parts.Length >= 8 && !string.IsNullOrWhiteSpace(parts[7]))
+                {
+                    var requiresList = parts[7].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    pkg.Requires.AddRange(requiresList);
                 }
 
                 packages.Add(pkg);
