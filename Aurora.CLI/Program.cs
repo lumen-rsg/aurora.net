@@ -22,6 +22,7 @@ class Program
             new RecoverCommand(),
             new InitCommand(),
             new InfoCommand(),
+            new SearchCommand(),
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);
