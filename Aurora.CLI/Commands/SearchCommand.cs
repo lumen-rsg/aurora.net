@@ -53,7 +53,7 @@ public class SearchCommand : ICommand
 
         AnsiConsole.MarkupLine($"[grey]Loaded {loadedCount} packages from {repoFiles.Length} repositories.[/]");
 
-        // 3. Multi-tier search with ranking
+        // 3. Multi-tier search with token-based ranking
         const int fuzzyThreshold = 3; // max Levenshtein distance for fuzzy matches
 
         var results = new List<(Package Pkg, string RepoId, int Rank)>();
@@ -64,18 +64,36 @@ public class SearchCommand : ICommand
             int rank;
 
             if (nameLower == query)
-                rank = 0; // Exact match — highest
+            {
+                rank = 0; // Exact name match — highest
+            }
             else if (nameLower.StartsWith(query))
-                rank = 1; // Starts with
-            else if (nameLower.Contains(query))
-                rank = 2; // Contains
+            {
+                rank = 1; // Name starts with query (e.g. "gnome-shell")
+            }
             else
             {
-                int dist = FuzzyMatcher.LevenshteinDistance(nameLower, query);
-                if (dist <= fuzzyThreshold)
-                    rank = 3 + dist; // Fuzzy — lower rank, further = worse
+                // Split into hyphen-delimited tokens for smarter matching
+                string[] tokens = nameLower.Split('-');
+
+                if (tokens.Any(t => t == query))
+                    rank = 2; // A token exactly equals the query
+                else if (tokens.Any(t => t.StartsWith(query)))
+                    rank = 3; // A token starts with the query
+                else if (tokens.Any(t => t.Contains(query)))
+                    rank = 4; // A token contains the query
                 else
-                    continue; // No match
+                {
+                    // Fuzzy match against individual tokens (not the whole name)
+                    int minDist = tokens
+                        .Select(t => FuzzyMatcher.LevenshteinDistance(t, query))
+                        .Min();
+
+                    if (minDist <= fuzzyThreshold)
+                        rank = 5 + minDist; // Fuzzy — lower rank, further = worse
+                    else
+                        continue; // No match
+                }
             }
 
             results.Add((pkg, repoId, rank));
@@ -112,9 +130,11 @@ public class SearchCommand : ICommand
         {
             string nameMarkup = rank switch
             {
-                0 => $"[bold green]{Markup.Escape(pkg.Name)}[/]",  // exact
-                1 => $"[cyan]{Markup.Escape(pkg.Name)}[/]",         // starts with
-                2 => $"[white]{Markup.Escape(pkg.Name)}[/]",        // contains
+                0 => $"[bold green]{Markup.Escape(pkg.Name)}[/]",  // exact name
+                1 => $"[cyan]{Markup.Escape(pkg.Name)}[/]",         // name starts with
+                2 => $"[green]{Markup.Escape(pkg.Name)}[/]",        // token exact match
+                3 => $"[white]{Markup.Escape(pkg.Name)}[/]",        // token starts with
+                4 => $"[yellow]{Markup.Escape(pkg.Name)}[/]",       // token contains
                 _ => $"[grey]{Markup.Escape(pkg.Name)}[/]"          // fuzzy
             };
 
