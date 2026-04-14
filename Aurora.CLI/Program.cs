@@ -8,8 +8,6 @@ class Program
 {
     static async Task<int> Main(string[] args)
     {
-        AuLogger.Initialize("aurora.log");
-
         // 1. RPM-Native Command Registry
         var commands = new List<ICommand>
         {
@@ -60,7 +58,10 @@ class Program
             : (OperatingSystem.IsLinux() ? "/" : Path.Combine(Directory.GetCurrentDirectory(), "sysroot"));
 
         var config = new CliConfiguration(sysRoot, force, assumeYes, skipGpg, skipDownload);
-        
+
+        // Initialize logging to a fixed path (not CWD)
+        AuLogger.Initialize(sysRoot);
+
         // Ensure core directories exist
         try 
         {

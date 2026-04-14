@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Aurora.Core.Logic;
+using Aurora.Core.Logging;
 using Aurora.Core.Models;
 using Aurora.Core.Net;
 using Aurora.Core.State;
@@ -344,6 +345,7 @@ public class HistoryCommand : ICommand
 
     private async Task PerformRollbackAsync(CliConfiguration config, long targetTransactionId)
     {
+        AuLogger.Info($"History: rollback requested to transaction #{targetTransactionId}");
         var dbPath = config.DbPath;
         var tx = await AnsiConsole.Status()
             .StartAsync("Loading transaction...", _ => TransactionHistory.GetTransactionAsync(dbPath, targetTransactionId));
@@ -447,6 +449,7 @@ public class HistoryCommand : ICommand
 
         if (!AnsiConsole.Confirm("[bold]Proceed with rollback?[/]"))
         {
+            AuLogger.Info("History: rollback cancelled by user.");
             AnsiConsole.MarkupLine("[dim]Rollback cancelled.[/]");
             return;
         }
@@ -737,6 +740,7 @@ public class HistoryCommand : ICommand
         }
 
         AnsiConsole.WriteLine();
+        AuLogger.Info($"History: rollback complete ({actions.Count} actions).");
         AnsiConsole.MarkupLine("[bold green]Rollback complete.[/]");
     }
 

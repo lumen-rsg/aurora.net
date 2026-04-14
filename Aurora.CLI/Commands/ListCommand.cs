@@ -1,3 +1,4 @@
+using Aurora.Core.Logging;
 using Aurora.Core.State;
 using Spectre.Console;
 
@@ -12,6 +13,7 @@ public class ListCommand : ICommand
     {
         var packages = RpmLocalDb.GetInstalledPackages(config.SysRoot);
 
+        AuLogger.Info($"List: {packages.Count} installed packages listed.");
         AnsiConsole.MarkupLine($"[bold]Root:[/] {config.SysRoot}");
         AnsiConsole.MarkupLine($"[bold]Installed Packages ({packages.Count}):[/]");
 

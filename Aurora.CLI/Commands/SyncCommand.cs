@@ -1,8 +1,9 @@
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using Aurora.Core.Net;
 using Aurora.Core.IO;
+using Aurora.Core.Logging;
+using Aurora.Core.Net;
 using Aurora.Core.Parsing;
 using Aurora.Core.State;
 using Spectre.Console;
@@ -16,6 +17,7 @@ public class SyncCommand : ICommand
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {
+        AuLogger.Info("Sync: synchronizing repositories...");
         AnsiConsole.MarkupLine($"[blue]Synchronizing repositories...[/]");
         
         var reposDir = PathHelper.GetPath(config.SysRoot, "etc/yum.repos.d");
@@ -23,6 +25,7 @@ public class SyncCommand : ICommand
         
         if (!Directory.Exists(reposDir) || !Directory.EnumerateFiles(reposDir, "*.repo").Any())
         {
+            AuLogger.Warn("Sync: no repository configurations found.");
             AnsiConsole.MarkupLine("[yellow]Warning:[/] No repository configurations found at [blue]etc/yum.repos.d/[/]");
             return;
         }
@@ -75,6 +78,7 @@ public class SyncCommand : ICommand
         // Invalidate repo cache so subsequent commands use fresh data
         RepoLoader.InvalidateCache(dbDir);
 
+        AuLogger.Info("Sync: complete.");
         AnsiConsole.MarkupLine("[green]Sync complete.[/]");
     }
 }

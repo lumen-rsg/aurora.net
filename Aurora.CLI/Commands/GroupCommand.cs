@@ -257,6 +257,7 @@ public class GroupCommand : ICommand
         }
 
         var groupId = args[0];
+        AuLogger.Info($"Group: installing group '{groupId}'...");
         var withOptional = args.Any(a => a == "--with-optional" || a == "--optional");
 
         var groups = RepoManager.LoadAllGroups(config.SysRoot);
@@ -415,6 +416,7 @@ public class GroupCommand : ICommand
                     msg => rpmLogs.Add(msg));
             });
             AnsiConsole.MarkupLine($"\n[green bold]✔ Group '{group.Name}' installed successfully.[/]");
+            AuLogger.Info($"Group: group '{group.Name}' installed successfully ({plan.Count} packages).");
 
             // Record in history
             try
@@ -456,6 +458,7 @@ public class GroupCommand : ICommand
         }
 
         var groupId = args[0];
+        AuLogger.Info($"Group: removing group '{groupId}'...");
         var groups = RepoManager.LoadAllGroups(config.SysRoot);
         var group = groups.FirstOrDefault(g =>
             g.Id.Equals(groupId, StringComparison.OrdinalIgnoreCase));
@@ -521,10 +524,12 @@ public class GroupCommand : ICommand
 
             if (process.ExitCode == 0)
             {
+                AuLogger.Info($"Group: group '{group.Name}' packages removed ({pkgsToRemove.Count} packages).");
                 AnsiConsole.MarkupLine($"\n[green bold]✔ Group '{group.Name}' packages removed.[/]");
             }
             else
             {
+                AuLogger.Error($"Group: removal failed with exit code {process.ExitCode}.");
                 AnsiConsole.MarkupLine($"[red bold]Removal failed (Exit Code {process.ExitCode}).[/]");
                 if (rpmLogs.Count > 0)
                 {

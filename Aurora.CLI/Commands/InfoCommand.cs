@@ -1,3 +1,4 @@
+using Aurora.Core.Logging;
 using Aurora.Core.Models;
 using Aurora.Core.State;
 using Spectre.Console;
@@ -18,11 +19,13 @@ public class InfoCommand : ICommand
         }
 
         string targetName = args[0];
+        AuLogger.Info($"Info: looking up package '{targetName}'...");
 
         // 1. Load packages indexed by name for fast lookup
         var repoFiles = RepoLoader.DiscoverRepoDatabases(config.RepoDir);
         if (repoFiles.Length == 0)
         {
+            AuLogger.Warn("Info: no repository databases found.");
             AnsiConsole.MarkupLine("[red]Error:[/] No repository databases found. Run 'au sync' first.");
             return;
         }
@@ -35,6 +38,7 @@ public class InfoCommand : ICommand
 
         if (foundPkg == null)
         {
+            AuLogger.Warn($"Info: package '{targetName}' not found in any repository.");
             AnsiConsole.MarkupLine($"[red]Error:[/] Package [bold]{targetName}[/] not found in any repository.");
             return;
         }

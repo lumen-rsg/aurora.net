@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Aurora.Core.Logging;
 using Aurora.Core.Models;
 
 namespace Aurora.Core.State;
@@ -62,9 +63,9 @@ public static class RpmLocalDb
             }
             process.WaitForExit();
         }
-        catch 
+        catch (Exception ex)
         {
-            // Silent fail for bootstrap
+            AuLogger.Error($"RpmLocalDb: failed to query installed packages: {ex.Message}");
         }
 
         return packages;

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Aurora.Core.Logging;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -10,6 +11,7 @@ public class AuditCommand : ICommand
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
+        AuLogger.Info("Audit: verifying RPM database and file integrity...");
         AnsiConsole.MarkupLine("[blue]Verifying RPM database and file integrity...[/]");
         AnsiConsole.MarkupLine("[grey]This may take a few minutes as it hashes every file on the system.[/]");
 
@@ -42,10 +44,12 @@ public class AuditCommand : ICommand
 
         if (!foundIssues && process.ExitCode == 0)
         {
+            AuLogger.Info("Audit: system is healthy, no issues found.");
             AnsiConsole.MarkupLine("[green]✔ System is perfectly healthy.[/]");
         }
         else
         {
+            AuLogger.Warn("Audit: issues found during verification.");
             AnsiConsole.MarkupLine("[red]Audit complete. Issues found above.[/]");
             AnsiConsole.MarkupLine("[grey]Reference: S=Size, M=Mode, 5=MD5, D=Device, L=Symlink, U=User, G=Group, T=Mtime[/]");
         }

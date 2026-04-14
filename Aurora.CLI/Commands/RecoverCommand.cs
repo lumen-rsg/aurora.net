@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Aurora.Core.Logging;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -10,6 +11,7 @@ public class RecoverCommand : ICommand
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
+        AuLogger.Info("Recover: rebuilding RPM database...");
         AnsiConsole.MarkupLine("[yellow]Attempting to rebuild RPM database...[/]");
         
         var psi = new ProcessStartInfo
@@ -26,11 +28,14 @@ public class RecoverCommand : ICommand
 
         if (proc?.ExitCode == 0)
         {
+            AuLogger.Info("Recover: RPM database rebuilt successfully.");
             AnsiConsole.MarkupLine("[green bold]✔ Recovery complete.[/] Database is now clean.");
         }
         else
         {
-            AnsiConsole.MarkupLine($"[red bold]ERROR during manual recovery:[/] {Markup.Escape(proc?.StandardError.ReadToEnd() ?? "Unknown error")}");
+            var errMsg = proc?.StandardError.ReadToEnd() ?? "Unknown error";
+            AuLogger.Error($"Recover: RPM database rebuild failed: {errMsg}");
+            AnsiConsole.MarkupLine($"[red bold]ERROR during manual recovery:[/] {Markup.Escape(errMsg)}");
         }
 
         return Task.CompletedTask;

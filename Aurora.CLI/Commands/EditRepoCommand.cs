@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Aurora.Core.IO;
+using Aurora.Core.Logging;
 using Aurora.Core.Parsing;
 using Spectre.Console;
 using Spectre.Console.Rendering;
@@ -17,6 +18,7 @@ public class EditRepoCommand : ICommand
 
         if (!Directory.Exists(reposDir))
         {
+            AuLogger.Warn($"Edit: repository directory not found: {reposDir}");
             AnsiConsole.MarkupLine("[red]Error:[/] Repository directory not found: " + reposDir);
             AnsiConsole.MarkupLine("[grey]Run 'aurora init' first to create the directory structure.[/]");
             return Task.CompletedTask;
@@ -141,6 +143,7 @@ public class EditRepoCommand : ICommand
         else
             File.WriteAllText(targetFile, content);
 
+        AuLogger.Info($"Edit: repository '{repo.Id}' added to {Path.GetFileName(targetFile)}.");
         AnsiConsole.MarkupLine($"[green bold]✔ Repository '{Markup.Escape(repo.Id)}' added to {Path.GetFileName(targetFile)}[/]");
         return Task.CompletedTask;
     }
@@ -169,6 +172,7 @@ public class EditRepoCommand : ICommand
         }
 
         RepoConfigParser.RemoveRepo(repos, repoId);
+        AuLogger.Info($"Edit: repository '{repoId}' removed.");
         AnsiConsole.MarkupLine($"[green bold]✔ Repository '{Markup.Escape(repoId)}' removed.[/]");
         return Task.CompletedTask;
     }
@@ -356,6 +360,7 @@ public class EditRepoCommand : ICommand
         }
         RepoConfigParser.SaveAllRepos(allRepos);
 
+        AuLogger.Info($"Edit: updated repository '{repo.Id}'.");
         AnsiConsole.MarkupLine($"[green bold]✔ Updated {Markup.Escape(repo.Id)}[/]");
     }
 

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Aurora.Core.Logic;
+using Aurora.Core.Logging;
 using Aurora.Core.State;
 using Spectre.Console;
 
@@ -15,6 +16,7 @@ public class CleanupCommand : ICommand
         // Clear repo package cache so the next command sees a fresh state
         RepoLoader.InvalidateCache(config.RepoDir);
 
+        AuLogger.Info("Cleanup: scanning for orphaned packages...");
         AnsiConsole.MarkupLine("[blue]Scanning for orphaned packages...[/]");
 
         // 1. Query all installed packages with their Requires
@@ -22,6 +24,7 @@ public class CleanupCommand : ICommand
 
         if (allPackages.Count == 0)
         {
+            AuLogger.Info("Cleanup: no installed packages found.");
             AnsiConsole.MarkupLine("[yellow]No installed packages found.[/]");
             return Task.CompletedTask;
         }
@@ -96,6 +99,7 @@ public class CleanupCommand : ICommand
 
         if (orphanNames.Count == 0)
         {
+            AuLogger.Info("Cleanup: no orphaned packages found.");
             AnsiConsole.MarkupLine("[green bold]✔ No orphaned packages found. System is clean.[/]");
             return Task.CompletedTask;
         }
@@ -156,6 +160,7 @@ public class CleanupCommand : ICommand
         using var process = Process.Start(psi);
         if (process == null)
         {
+            AuLogger.Error("Cleanup: failed to start rpm process.");
             AnsiConsole.MarkupLine("[red]Failed to start rpm process.[/]");
             return Task.CompletedTask;
         }
@@ -177,10 +182,12 @@ public class CleanupCommand : ICommand
 
         if (process.ExitCode == 0)
         {
+            AuLogger.Info($"Cleanup: removed {orphanPackages.Count} orphaned packages ({FormatSize(totalSize)} freed).");
             AnsiConsole.MarkupLine($"[green bold]✔ Cleanup complete. Removed {orphanPackages.Count} orphaned packages ({FormatSize(totalSize)} freed).[/]");
         }
         else
         {
+            AuLogger.Error($"Cleanup: rpm failed with exit code {process.ExitCode}.");
             AnsiConsole.MarkupLine($"[red bold]Cleanup failed (Exit Code {process.ExitCode}).[/]");
         }
 

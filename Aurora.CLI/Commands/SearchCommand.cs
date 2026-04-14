@@ -1,4 +1,5 @@
 using Aurora.Core.Logic;
+using Aurora.Core.Logging;
 using Aurora.Core.Models;
 using Aurora.Core.State;
 using Spectre.Console;
@@ -19,11 +20,13 @@ public class SearchCommand : ICommand
         }
 
         string query = args[0].ToLowerInvariant();
+        AuLogger.Info($"Search: querying '{query}'...");
 
         // 1. Load all packages from all repos (parallel, optimized)
         var repoFiles = RepoLoader.DiscoverRepoDatabases(config.RepoDir);
         if (repoFiles.Length == 0)
         {
+            AuLogger.Warn("Search: no repository databases found.");
             AnsiConsole.MarkupLine("[red]Error:[/] No repository databases found. Run 'au sync' first.");
             return;
         }
@@ -95,6 +98,7 @@ public class SearchCommand : ICommand
         // 6. Display results
         if (deduped.Count == 0)
         {
+            AuLogger.Info($"Search: no packages found matching '{query}'.");
             AnsiConsole.MarkupLine($"[yellow]No packages found matching '[bold]{Markup.Escape(query)}[/]'.[/]");
             return;
         }
@@ -129,6 +133,7 @@ public class SearchCommand : ICommand
 
         AnsiConsole.Write(table);
         AnsiConsole.MarkupLine($"[bold]Found {deduped.Count} matching package(s).[/]");
+        AuLogger.Info($"Search: found {deduped.Count} matching package(s) for '{query}'.");
     }
 
     private static string FormatBytes(long bytes)

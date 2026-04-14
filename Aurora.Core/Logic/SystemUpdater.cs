@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using Aurora.Core.Logging;
 using Aurora.Core.Models;
 using Aurora.Core.State;
 
@@ -123,8 +124,11 @@ public class SystemUpdater
 
         if (process.ExitCode != 0)
         {
+            AuLogger.Error($"SystemUpdater: RPM transaction failed with exit code {process.ExitCode}.");
             throw new Exception($"RPM transaction failed with exit code {process.ExitCode}. System state is protected by RPM rollback.");
         }
+        
+        AuLogger.Info($"SystemUpdater: RPM transaction completed successfully ({paths.Count} packages).");
     }
     
 }

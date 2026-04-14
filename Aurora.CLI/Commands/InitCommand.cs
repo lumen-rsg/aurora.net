@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Aurora.Core.IO;
+using Aurora.Core.Logging;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -13,6 +14,7 @@ public class InitCommand : ICommand
     {
         // 1. Ensure we have the absolute host path for the SysRoot
         string absoluteRoot = Path.GetFullPath(config.SysRoot);
+        AuLogger.Info($"Init: initializing root at '{absoluteRoot}'...");
         AnsiConsole.MarkupLine($"[blue]Initializing Root at:[/] {absoluteRoot}");
 
         // 2. Create the exact modern Fedora skeleton
@@ -76,17 +78,21 @@ public class InitCommand : ICommand
             string dbFile = Path.Combine(absoluteHostDbPath, "rpmdb.sqlite");
             if (File.Exists(dbFile))
             {
+                AuLogger.Info("Init: RPM SQLite database created successfully.");
                 AnsiConsole.MarkupLine($"[green bold]✔ RPM SQLite database created successfully.[/]");
             }
             else
             {
+                AuLogger.Warn("Init: RPM reported success, but rpmdb.sqlite is missing.");
                 AnsiConsole.MarkupLine("[yellow]! RPM reported success, but rpmdb.sqlite is missing. Check /var/lib/rpm.[/]");
             }
             
+            AuLogger.Info("Init: Aurora root ready.");
             AnsiConsole.MarkupLine($"[green bold]✔ Aurora root ready.[/]");
         }
         else
         {
+            AuLogger.Error($"Init: failed to initialize RPM db (Exit Code {proc.ExitCode}): {err}");
             AnsiConsole.MarkupLine($"[red]Failed to initialize RPM db (Exit Code {proc.ExitCode}):[/]");
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(err)}[/]");
             
