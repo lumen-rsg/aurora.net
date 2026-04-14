@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Aurora.Core.Net;
 using Aurora.Core.IO;
 using Aurora.Core.Parsing;
+using Aurora.Core.State;
 using Spectre.Console;
 
 namespace Aurora.CLI.Commands;
@@ -70,6 +71,9 @@ public class SyncCommand : ICommand
         {
             AnsiConsole.MarkupLine($"  [grey]{name}:[/] {status}");
         });
+
+        // Invalidate repo cache so subsequent commands use fresh data
+        RepoLoader.InvalidateCache(dbDir);
 
         AnsiConsole.MarkupLine("[green]Sync complete.[/]");
     }

@@ -12,6 +12,9 @@ public class CleanupCommand : ICommand
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
+        // Clear repo package cache so the next command sees a fresh state
+        RepoLoader.InvalidateCache(config.RepoDir);
+
         AnsiConsole.MarkupLine("[blue]Scanning for orphaned packages...[/]");
 
         // 1. Query all installed packages with their Requires
