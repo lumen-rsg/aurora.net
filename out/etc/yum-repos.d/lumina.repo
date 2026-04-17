@@ -1,0 +1,30 @@
+[lumina-core]
+name=lumina 26.03 x64 - Core
+baseurl=https://packages.lumina.1t.ru/releases/26.03/x64/lumina-core
+enabled=1
+gpgcheck=0
+
+[lumina-updates]
+name=lumina 26.03 x64 - Updates
+baseurl=https://packages.lumina.1t.ru/releases/26.03/x64/lumina-updates
+enabled=1
+gpgcheck=0
+
+[lumen]
+name=lumen - core utilities
+baseurl=https://packages.lumina.1t.ru/releases/26.03/x64/lumen
+enabled=1
+gpgcheck=0
+
+[lumina-common]
+name=lumina 26.03 - Common Resources
+baseurl=https://packages.lumina.1t.ru/releases/26.03/noarch/common
+enabled=1
+gpgcheck=0
+
+[lumina-common-updates]
+name=lumina 26.03 - Common Resources (Updates)
+baseurl=https://packages.lumina.1t.ru/releases/26.03/noarch/common-updates
+enabled=1
+gpgcheck=0
+

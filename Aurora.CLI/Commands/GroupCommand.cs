@@ -412,7 +412,7 @@ public class GroupCommand : ICommand
         {
             AnsiConsole.Status().Start("[cyan]Installing packages...[/]", ctx =>
             {
-                SystemUpdater.ApplyUpdates(packagePaths, config.SysRoot, config.Force,
+                SystemUpdater.ApplyUpdates(packagePaths, config.SysRoot, config.Force, config.SkipGpg,
                     msg => rpmLogs.Add(msg));
             });
             AnsiConsole.MarkupLine($"\n[green bold]✔ Group '{group.Name}' installed successfully.[/]");

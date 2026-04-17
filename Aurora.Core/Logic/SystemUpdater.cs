@@ -54,7 +54,7 @@ public class SystemUpdater
    /// <summary>
     /// Applies the downloaded RPM updates via the native RPM binary.
     /// </summary>
-    public static void ApplyUpdates(IEnumerable<string> rpmFilePaths, string sysRoot = "/", bool force = false, Action<string>? logAction = null)
+    public static void ApplyUpdates(IEnumerable<string> rpmFilePaths, string sysRoot = "/", bool force = false, bool skipGpg = false, Action<string>? logAction = null)
     {
         // Filter out any potential nulls from the array
         var paths = rpmFilePaths.Where(p => !string.IsNullOrEmpty(p)).ToList();
@@ -86,6 +86,12 @@ public class SystemUpdater
         if (force)
         {
             args.Add("--force");
+        }
+
+        if (skipGpg)
+        {
+            args.Add("--nosignature");
+            args.Add("--nodigest");
         }
         
         args.AddRange(paths.Select(p => $"\"{p}\""));

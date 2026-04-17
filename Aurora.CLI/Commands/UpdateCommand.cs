@@ -101,7 +101,7 @@ public class UpdateCommand : ICommand
         {
             AnsiConsole.Status().Start("[cyan]Applying updates...[/]", ctx => 
             {
-                SystemUpdater.ApplyUpdates(packagePaths.ToList(), config.SysRoot, config.Force, 
+                SystemUpdater.ApplyUpdates(packagePaths.ToList(), config.SysRoot, config.Force, config.SkipGpg,
                     msg => rpmLogs.Add(msg));
             });
             

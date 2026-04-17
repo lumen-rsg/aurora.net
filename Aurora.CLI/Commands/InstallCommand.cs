@@ -34,7 +34,7 @@ public class InstallCommand : ICommand
             {
                 AnsiConsole.Status().Start("[cyan]Installing packages...[/]", ctx => 
                 {
-                    SystemUpdater.ApplyUpdates(fullPaths, config.SysRoot, config.Force,
+                    SystemUpdater.ApplyUpdates(fullPaths, config.SysRoot, config.Force, config.SkipGpg,
                         msg => rpmLogs.Add(msg));
                 });
                 AnsiConsole.MarkupLine($"[green bold]✔ Installed local packages successfully.[/]");
@@ -201,7 +201,7 @@ public class InstallCommand : ICommand
             AnsiConsole.Status().Start("[cyan]Installing packages...[/]", ctx => 
             {
                 // Pass the perfectly ordered array to RPM, collecting logs silently
-                SystemUpdater.ApplyUpdates(packagePaths, config.SysRoot, config.Force,
+                SystemUpdater.ApplyUpdates(packagePaths, config.SysRoot, config.Force, config.SkipGpg,
                     msg => rpmLogs.Add(msg));
             });
             AnsiConsole.MarkupLine($"\n[green bold]✔ Transaction successful.[/]");

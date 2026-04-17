@@ -665,6 +665,11 @@ public class HistoryCommand : ICommand
                                 args.Add(config.SysRoot);
                             }
                             if (config.Force) args.Add("--force");
+                            if (config.SkipGpg)
+                            {
+                                args.Add("--nosignature");
+                                args.Add("--nodigest");
+                            }
                             args.AddRange(validPaths.Select(p => $"\"{p}\""));
 
                             var psi = new ProcessStartInfo
@@ -700,7 +705,7 @@ public class HistoryCommand : ICommand
                         }
                         else
                         {
-                            SystemUpdater.ApplyUpdates(validPaths, config.SysRoot, config.Force,
+                            SystemUpdater.ApplyUpdates(validPaths, config.SysRoot, config.Force, config.SkipGpg,
                                 msg => rpmLogs.Add(msg));
                         }
                     });
