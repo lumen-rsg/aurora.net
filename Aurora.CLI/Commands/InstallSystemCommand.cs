@@ -559,7 +559,7 @@ public class InstallSystemCommand : ICommand
                 RunCommand("chroot",
                     $"{MountPoint} grub2-install --target=x86_64-efi " +
                     "--efi-directory=/boot/efi --boot-directory=/boot/grub2 " +
-                    $"--no-nvram --removable \"{baseDevice}\"",
+                    $"--no-nvram --removable --force \"{baseDevice}\"",
                     "Failed to install GRUB2");
 
                 ctx.Status("[cyan]Generating GRUB configuration...[/]");
