@@ -120,7 +120,7 @@ public class InstallCommand : ICommand
                     {
                         resolvedCount = count;
                         ctx.Status($"[cyan]Resolving dependencies...[/] [grey]({count} resolved)[/]");
-                    });
+                    }, resolveRecommends: !config.NoRecommends);
                     return result;
                 });
 

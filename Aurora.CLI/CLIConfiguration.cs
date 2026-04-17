@@ -10,6 +10,7 @@ public class CliConfiguration
     public bool AssumeYes { get; }
     public bool SkipSig { get; }
     public bool SkipGpg { get; } // NEW
+    public bool NoRecommends { get; }
     public bool SkipDownload { get; }
 
     // Computed Properties for convenience
@@ -18,12 +19,13 @@ public class CliConfiguration
     public string ScriptDir => PathHelper.GetPath(SysRoot, "var/lib/aurora/scripts");
     public string RepoConfigPath => PathHelper.GetPath(SysRoot, "var/lib/aurora/repo_core.yaml");
 
-    public CliConfiguration(string sysRoot, bool force, bool assumeYes, bool skipGpg, bool skipDownload)
+    public CliConfiguration(string sysRoot, bool force, bool assumeYes, bool skipGpg, bool noRecommends, bool skipDownload)
     {
         SysRoot = sysRoot;
         Force = force;
         AssumeYes = assumeYes;
         SkipGpg = skipGpg;
+        NoRecommends = noRecommends;
         SkipDownload = skipDownload; // NEW
         DbPath = Aurora.Core.IO.PathHelper.GetPath(SysRoot, "var/lib/aurora/aurora.db");
     }

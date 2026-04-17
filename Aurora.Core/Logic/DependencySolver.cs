@@ -45,10 +45,16 @@ public class DependencySolver
     /// </summary>
     /// <param name="targets">Package names or provides to resolve.</param>
     /// <param name="onProgress">Optional callback invoked with (resolvedCount, currentPackageName) after each resolution step.</param>
+    /// <param name="resolveRecommends">When true, also resolves weak (Recommends) dependencies.</param>
     /// <returns>Packages in dependency-first order.</returns>
-    public List<Package> Resolve(IEnumerable<string> targets, Action<int, string>? onProgress = null)
+    public List<Package> Resolve(IEnumerable<string> targets, Action<int, string>? onProgress = null,
+        bool resolveRecommends = true)
     {
         var plan = ResolveToPlan(targets, onProgress);
+
+        if (resolveRecommends)
+            ResolveRecommendsPass(plan, onProgress);
+
         return TopologicalSort(plan.Values);
     }
 
@@ -447,6 +453,130 @@ public class DependencySolver
         }
 
         throw new Exception(msg);
+    }
+
+    // ─── Weak Dependency Resolution (Recommends) ────────────────────
+
+    /// <summary>
+    ///     Second-pass resolution of weak (Recommends) dependencies. For every
+    ///     package already in the plan, attempts to pull in its recommended
+    ///     packages and their transitive hard dependencies.
+    ///     Unresolvable recommends are silently skipped (matching RPM/dnf semantics).
+    /// </summary>
+    private void ResolveRecommendsPass(
+        Dictionary<string, Package> plan, Action<int, string>? onProgress)
+    {
+        // Snapshot the current plan keys — we'll iterate over the original set
+        // and may add new entries during the pass.
+        var originalPackages = plan.Values.ToList();
+        var processedRecs = new HashSet<string>();
+        var resolvedCount = plan.Count;
+
+        foreach (var pkg in originalPackages)
+        {
+            if (pkg.Recommends.Count == 0) continue;
+
+            foreach (var recStr in pkg.Recommends)
+            {
+                if (!processedRecs.Add(recStr)) continue;
+
+                // Handle conditional recommends: "(foo if bar)"
+                var actualRecStr = recStr;
+                if (recStr.StartsWith('(') && recStr.Contains(" if "))
+                {
+                    if (!EvaluateConditionalDependency(recStr, plan, out actualRecStr))
+                        continue;
+                }
+
+                var req = new RpmRequirement(actualRecStr);
+                var lookupName = ResolveLookupName(req.Name);
+
+                if (!_providersMap.TryGetValue(lookupName, out var candidates))
+                    continue; // Silently skip — weak deps are optional
+
+                var validCandidates = FilterValidCandidates(candidates, req);
+                if (validCandidates.Count == 0)
+                    continue; // No version match — skip silently
+
+                // Already installed or already in the plan — nothing to do
+                if (IsSatisfiedByInstalled(validCandidates)) continue;
+                if (validCandidates.Any(c => plan.ContainsKey(c.Pkg.Name))) continue;
+
+                var chosenPkg = PickBestCandidate(lookupName, validCandidates);
+
+                if (!plan.ContainsKey(chosenPkg.Name))
+                {
+                    plan[chosenPkg.Name] = chosenPkg;
+                    resolvedCount++;
+                    onProgress?.Invoke(resolvedCount, chosenPkg.Name);
+
+                    // The recommended package's HARD dependencies must be resolved
+                    // (they are mandatory once we decide to pull in the package).
+                    ResolveRecommendedDeps(chosenPkg, plan, ref resolvedCount, onProgress);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    ///     Recursively resolves the hard (Requires) dependencies of a recommended
+    ///     package. Behaves like the main BFS but never throws on missing providers
+    ///     for transitive recommends — only hard deps are chased here.
+    /// </summary>
+    private void ResolveRecommendedDeps(
+        Package pkg, Dictionary<string, Package> plan,
+        ref int resolvedCount, Action<int, string>? onProgress)
+    {
+        var queue = new Queue<(string ReqStr, Package? Requester)>();
+        var processed = new HashSet<string>();
+
+        EnqueueDependencies(pkg, plan, queue);
+
+        while (queue.Count > 0)
+        {
+            var (currentReqStr, requester) = queue.Dequeue();
+            if (!processed.Add(currentReqStr)) continue;
+
+            var req = new RpmRequirement(currentReqStr);
+            var lookupName = ResolveLookupName(req.Name);
+
+            if (!_providersMap.TryGetValue(lookupName, out var candidates))
+            {
+                // Virtual identity deps — skip silently
+                if (lookupName.StartsWith("user(") || lookupName.StartsWith("group("))
+                    continue;
+
+                // Missing provider for a hard dep of a recommended package:
+                // this shouldn't happen in a well-formed repo, but we log a warning
+                // instead of failing the entire transaction.
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Warning:[/] Skipping recommended dependency '{currentReqStr}' " +
+                    $"[grey](required by {requester?.Name ?? "unknown"}, no provider found)[/]");
+                continue;
+            }
+
+            var validCandidates = FilterValidCandidates(candidates, req);
+            if (validCandidates.Count == 0)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Warning:[/] Version conflict for '{currentReqStr}' " +
+                    $"[grey](required by {requester?.Name ?? "unknown"})[/]");
+                continue;
+            }
+
+            if (IsSatisfiedByInstalled(validCandidates)) continue;
+            if (validCandidates.Any(c => plan.ContainsKey(c.Pkg.Name))) continue;
+
+            var chosenPkg = PickBestCandidate(lookupName, validCandidates);
+
+            if (!plan.ContainsKey(chosenPkg.Name))
+            {
+                plan[chosenPkg.Name] = chosenPkg;
+                resolvedCount++;
+                onProgress?.Invoke(resolvedCount, chosenPkg.Name);
+                EnqueueDependencies(chosenPkg, plan, queue);
+            }
+        }
     }
 
     // ─── Path Alias Lookup ────────────────────────────────────────────

@@ -202,6 +202,43 @@ public class RpmRepoDb : IDisposable
             }
         }
 
+        // 5. Fetch Recommends (weak dependencies — filtered to loaded packages only)
+        try
+        {
+            using var cmdRec = _connection.CreateCommand();
+            cmdRec.CommandText = @"
+                SELECT r.pkgKey, r.name, r.flags, r.epoch, r.version, r.release 
+                FROM recommends r
+                WHERE r.pkgKey IN (SELECT pkgKey FROM packages WHERE arch = $arch OR arch = 'noarch')";
+            cmdRec.Parameters.AddWithValue("$arch", _hostArch);
+            using var reader = cmdRec.ExecuteReader();
+            int idKey = reader.GetOrdinal("pkgKey");
+            int idName = reader.GetOrdinal("name");
+            int idFlags = reader.GetOrdinal("flags");
+            int idEpoch = reader.GetOrdinal("epoch");
+            int idVersion = reader.GetOrdinal("version");
+            int idRelease = reader.GetOrdinal("release");
+
+            while (reader.Read())
+            {
+                long pkgKey = reader.GetInt64(idKey);
+                if (packages.TryGetValue(pkgKey, out var pkg))
+                {
+                    string name = reader.GetString(idName);
+                    string? flags = reader.IsDBNull(idFlags) ? null : reader.GetString(idFlags);
+                    string? epoch = reader.IsDBNull(idEpoch) ? null : reader.GetString(idEpoch);
+                    string? version = reader.IsDBNull(idVersion) ? null : reader.GetString(idVersion);
+                    string? release = reader.IsDBNull(idRelease) ? null : reader.GetString(idRelease);
+
+                    pkg.Recommends.Add(FormatCapability(name, flags, epoch, version, release));
+                }
+            }
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException)
+        {
+            // The 'recommends' table may not exist in older repository formats — silently skip.
+        }
+
         return new List<Package>(packages.Values);
     }
 

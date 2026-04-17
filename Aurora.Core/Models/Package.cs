@@ -24,6 +24,7 @@ public class Package
 
     // Dependency Graph (Capabilities)
     public List<string> Requires { get; set; } = new();
+    public List<string> Recommends { get; set; } = new();
     public List<string> Provides { get; set; } = new();
     public List<string> Conflicts { get; set; } = new();
     public List<string> Obsoletes { get; set; } = new();
