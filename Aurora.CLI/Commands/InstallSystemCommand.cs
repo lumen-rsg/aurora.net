@@ -557,7 +557,7 @@ public class InstallSystemCommand : ICommand
             AnsiConsole.Status().Start("[cyan]Installing GRUB2 bootloader...[/]", ctx =>
             {
                 RunCommand("chroot",
-                    $"{MountPoint} grub2-install --target=x86_64-efi \"{baseDevice}\"",
+                    $"{MountPoint} grub2-install --target=x86_64-efi --force \"{baseDevice}\"",
                     "Failed to install GRUB2");
 
                 ctx.Status("[cyan]Generating GRUB configuration...[/]");
