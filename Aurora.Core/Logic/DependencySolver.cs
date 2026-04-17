@@ -241,8 +241,11 @@ public class DependencySolver
                 throw new Exception($"Version conflict for '{currentReqStr}'{reqInfo}.");
             }
 
-            // If an installed package already satisfies this requirement, skip
-            if (IsSatisfiedByInstalled(validCandidates))
+            // If an installed package already satisfies this *transitive* dependency, skip.
+            // For direct user targets (requester == null), we always proceed so that
+            // the explicitly-requested package name gets installed, even if some other
+            // installed package happens to provide the same virtual capability.
+            if (requester != null && IsSatisfiedByInstalled(validCandidates))
                 continue;
 
             var chosenPkg = PickBestCandidate(lookupName, validCandidates);
