@@ -23,7 +23,7 @@ public class InstallSystemCommand : ICommand
         "filesystem", "setup", "basesystem", "coreutils",
         "bash", "systemd", "dbus-broker", "iproute",
         "passwd", "shadow-utils", "util-linux",
-        "grub2", "grub2-efi-x64", "grub2-efi-x64-modules", "grub2-tools", "shim-x64",
+        "grub2", "grub2-efi-x64", "grub2-efi-x64-modules", "grub2-tools", "shim-x64", "efibootmgr",
         "linux-firmware", "kernel-core", "kernel-modules",
         "vim-minimal", "nano", "less", "which", "findutils",
         "procps-ng", "psmisc", "hostname", "iputils", "curl"
