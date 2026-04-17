@@ -25,6 +25,7 @@ class Program
             new HistoryCommand(),
             new EditRepoCommand(),
             new GroupCommand(),
+            new InstallSystemCommand(),
         };
         
         var commandMap = commands.ToDictionary(c => c.Name, c => c);

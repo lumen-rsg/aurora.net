@@ -15,4 +15,7 @@ public static partial class Syscall
     
     [LibraryImport("libc", SetLastError = true)]
     public static partial uint geteuid();
+
+    [LibraryImport("libc", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    public static partial int chroot(string path);
 }
