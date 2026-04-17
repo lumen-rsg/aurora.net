@@ -23,7 +23,7 @@ public class InstallSystemCommand : ICommand
         "filesystem", "setup", "basesystem", "coreutils",
         "bash", "systemd", "dbus-broker", "iproute",
         "passwd", "shadow-utils", "util-linux",
-        "grub2", "grub2-efi-x64", "grub2-tools", "shim-x64",
+        "grub2", "grub2-efi-x64", "grub2-efi-x64-modules", "grub2-tools", "shim-x64",
         "linux-firmware", "kernel-core", "kernel-modules",
         "vim-minimal", "nano", "less", "which", "findutils",
         "procps-ng", "psmisc", "hostname", "iputils", "curl"
@@ -106,6 +106,24 @@ public class InstallSystemCommand : ICommand
         var syncCmd = new SyncCommand();
         await syncCmd.ExecuteAsync(targetConfig, Array.Empty<string>());
 
+        // ─── Bind-mount kernel virtual filesystems ────────────────────
+        // Required for RPM post-install scripts (kernel initramfs, grub2-probe,
+        // udev hwdb, systemd catalog) and grub2-install inside chroot.
+        AnsiConsole.MarkupLine($"\n[bold blue]Mounting virtual filesystems...[/]");
+        try
+        {
+            RunCommand("mkdir", $"-p {MountPoint}/dev {MountPoint}/proc {MountPoint}/sys", "Failed to create virtual fs directories");
+            RunCommand("mount", $"--bind /dev {MountPoint}/dev", "Failed to bind-mount /dev");
+            RunCommand("mount", $"--bind /proc {MountPoint}/proc", "Failed to bind-mount /proc");
+            RunCommand("mount", $"--bind /sys {MountPoint}/sys", "Failed to bind-mount /sys");
+            AnsiConsole.MarkupLine("[green bold]✔ Virtual filesystems mounted.[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Virtual filesystem mount failed: {Markup.Escape(ex.Message)}[/]");
+            return;
+        }
+
         // ─── Step 6: Install Base System ───────────────────────────────
         AnsiConsole.MarkupLine($"\n[bold blue]Step 6:[/] Installing base system...");
         await InstallBaseSystem(targetConfig);
@@ -117,6 +135,21 @@ public class InstallSystemCommand : ICommand
         // ─── Step 8: Install GRUB2 ─────────────────────────────────────
         AnsiConsole.MarkupLine($"\n[bold blue]Step 8:[/] Installing bootloader...");
         InstallGrub(baseDevice);
+
+        // ─── Cleanup: Unmount virtual filesystems ──────────────────────
+        // No longer needed after GRUB install; package scriptlets are done.
+        AnsiConsole.MarkupLine($"\n[bold blue]Cleaning up virtual filesystems...[/]");
+        try
+        {
+            RunCommand("umount", $"{MountPoint}/sys", "Failed to unmount /mnt/sys");
+            RunCommand("umount", $"{MountPoint}/proc", "Failed to unmount /mnt/proc");
+            RunCommand("umount", $"{MountPoint}/dev", "Failed to unmount /mnt/dev");
+            AnsiConsole.MarkupLine("[green bold]✔ Virtual filesystems unmounted.[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Warning: Virtual filesystem cleanup failed: {Markup.Escape(ex.Message)}[/]");
+        }
 
         // ─── Step 9: User & Password Setup ─────────────────────────────
         AnsiConsole.MarkupLine($"\n[bold blue]Step 9:[/] User setup...");
