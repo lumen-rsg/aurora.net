@@ -26,7 +26,9 @@ public class InstallSystemCommand : ICommand
         "grub2", "grub2-efi-x64", "grub2-efi-x64-modules", "grub2-tools", "shim-x64", "efibootmgr",
         "linux-firmware", "kernel-core", "kernel-modules",
         "vim-minimal", "nano", "less", "which", "findutils",
-        "procps-ng", "psmisc", "hostname", "iputils", "curl"
+        "procps-ng", "psmisc", "hostname", "iputils", "curl",
+        "NetworkManager", "wpa_supplicant", "NetworkManager-wifi",
+        "sudo"
     ];
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
@@ -132,6 +134,18 @@ public class InstallSystemCommand : ICommand
         AnsiConsole.MarkupLine($"\n[bold blue]Step 7:[/] Additional packages...");
         await SelectAndInstallGroups(targetConfig);
 
+        // ─── Rebuild linker cache ───────────────────────────────────────
+        AnsiConsole.MarkupLine($"\n[bold blue]Rebuilding linker cache...[/]");
+        try
+        {
+            RunCommand("ldconfig", $"-r \"{MountPoint}\"", "Failed to rebuild linker cache");
+            AnsiConsole.MarkupLine("[green bold]✔ Linker cache rebuilt.[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Warning: ldconfig failed: {Markup.Escape(ex.Message)}[/]");
+        }
+
         // ─── Step 8: Install GRUB2 ─────────────────────────────────────
         AnsiConsole.MarkupLine($"\n[bold blue]Step 8:[/] Installing bootloader...");
         InstallGrub(baseDevice);
@@ -158,6 +172,50 @@ public class InstallSystemCommand : ICommand
         // ─── Step 10: fstab & Finalization ─────────────────────────────
         AnsiConsole.MarkupLine($"\n[bold blue]Step 10:[/] Finalizing...");
         await GenerateFstab(efiPart, bootPart, rootPart);
+
+        // Copy DNS configuration from host
+        try
+        {
+            var hostResolv = "/etc/resolv.conf";
+            var targetResolv = Path.Combine(MountPoint, "etc/resolv.conf");
+            if (File.Exists(hostResolv))
+            {
+                File.Copy(hostResolv, targetResolv, true);
+                AnsiConsole.MarkupLine("[green bold]✔ DNS configuration copied.[/]");
+            }
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Warning: Failed to copy resolv.conf: {Markup.Escape(ex.Message)}[/]");
+        }
+
+        // Configure sudoers for wheel group
+        try
+        {
+            var sudoersDir = Path.Combine(MountPoint, "etc/sudoers.d");
+            Directory.CreateDirectory(sudoersDir);
+            var wheelSudoers = Path.Combine(sudoersDir, "wheel");
+            await File.WriteAllTextAsync(wheelSudoers, "%wheel ALL=(ALL) ALL\n");
+            RunCommand("chmod", $"440 \"{wheelSudoers}\"", "Failed to set sudoers permissions");
+
+            // Ensure /etc/sudoers includes sudoers.d
+            var sudoersPath = Path.Combine(MountPoint, "etc/sudoers");
+            if (File.Exists(sudoersPath))
+            {
+                var sudoersContent = await File.ReadAllTextAsync(sudoersPath);
+                if (!sudoersContent.Contains("@includedir /etc/sudoers.d") &&
+                    !sudoersContent.Contains("#includedir /etc/sudoers.d"))
+                {
+                    await File.AppendAllTextAsync(sudoersPath, "\n@includedir /etc/sudoers.d\n");
+                }
+            }
+
+            AnsiConsole.MarkupLine("[green bold]✔ Sudoers configured for wheel group.[/]");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Warning: Failed to configure sudoers: {Markup.Escape(ex.Message)}[/]");
+        }
 
         // Done!
         AnsiConsole.Write(new Rule("[green bold]Installation Complete[/]").RuleStyle("green"));
@@ -308,7 +366,7 @@ public class InstallSystemCommand : ICommand
                     {
                         resolvedCount = count;
                         ctx.Status($"[cyan]Resolving base system dependencies...[/] [grey]({count} resolved)[/]");
-                    }, resolveRecommends: false);
+                    }, resolveRecommends: !config.NoRecommends);
                     return result;
                 });
 
@@ -623,7 +681,11 @@ public class InstallSystemCommand : ICommand
         if (!groupLines.Any(l => l.StartsWith("wheel:")))
             groupLines.Add("wheel:x:10:");
 
-        // Add user group
+        // Ensure users group exists (GID 100 - standard users group)
+        if (!groupLines.Any(l => l.StartsWith("users:")))
+            groupLines.Add("users:x:100:");
+
+        // Add user private group
         groupLines.Add($"{username}:x:{uid}:");
         // Add user to wheel group
         for (int i = 0; i < groupLines.Count; i++)
@@ -645,7 +707,7 @@ public class InstallSystemCommand : ICommand
         // Write to /etc/passwd
         var passwdPath = Path.Combine(MountPoint, "etc/passwd");
         var passwdLines = File.Exists(passwdPath) ? File.ReadAllLines(passwdPath).ToList() : new List<string>();
-        passwdLines.Add($"{username}:x:{uid}:{uid}:{username}:/home/{username}:/bin/bash");
+        passwdLines.Add($"{username}:x:{uid}:100:{username}:/home/{username}:/bin/bash");
         File.WriteAllLines(passwdPath, passwdLines);
 
         // Write to /etc/shadow
@@ -683,6 +745,16 @@ public class InstallSystemCommand : ICommand
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 File.Copy(file, target, true);
             }
+        }
+
+        // Fix ownership of home directory (GID 100 = users group)
+        try
+        {
+            RunCommand("chown", $"-R {uid}:100 \"{homeDir}\"", "Failed to set home directory ownership");
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Warning: Failed to set home directory ownership: {Markup.Escape(ex.Message)}[/]");
         }
 
         AnsiConsole.MarkupLine($"[green bold]✔ User '{Markup.Escape(username)}' created with wheel group access.[/]");
@@ -862,7 +934,11 @@ public class InstallSystemCommand : ICommand
                 var parts = line.Split(':');
                 if (parts.Length >= 3 && int.TryParse(parts[2], out var existingUid))
                 {
-                    if (existingUid >= uid) uid = existingUid + 1;
+                    // Only consider UIDs in the normal user range (1000-60000).
+                    // System accounts like 'nobody' (65534) must not push the
+                    // first user UID past the valid login UID range.
+                    if (existingUid >= uid && existingUid < 60000)
+                        uid = existingUid + 1;
                 }
             }
         }
