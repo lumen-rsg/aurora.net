@@ -12,14 +12,14 @@ public static class RepoConfigParser
     {
         var repos = new Dictionary<string, RepoConfig>();
         RepoConfig? currentRepo = null;
-        
+
         string baseArch = GetBaseArch();
-        string releaseVer = GetReleaseVer();
+        (string major, string minor) = GetReleaseVerParts();
 
         foreach (var rawLine in content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None))
         {
             var trimmed = rawLine.Trim();
-            if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith('#') || trimmed.StartsWith(';')) 
+            if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith('#') || trimmed.StartsWith(';'))
                 continue;
 
             if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
@@ -38,17 +38,32 @@ public static class RepoConfigParser
                     var key = parts[0].Trim().ToLowerInvariant();
                     var value = parts[1].Trim().Trim('"', '\'');
 
-                    // --- MACRO EXPANSION ---
-                    value = value.Replace("$releasever", releaseVer)
+                    // Macro expansion
+                    value = value.Replace("$releasever_major", major)
+                                 .Replace("$releasever_minor", minor);
+
+                    // $releasever must come after $releasever_major/$releasever_minor
+                    // to avoid double-replacement (e.g., "42" in "$releasever_major")
+                    value = value.Replace("$releasever", major + (string.IsNullOrEmpty(minor) ? "" : "." + minor))
                                  .Replace("$basearch", baseArch);
 
                     switch (key)
                     {
                         case "name": currentRepo.Name = value; break;
                         case "baseurl": currentRepo.BaseUrl = value; break;
-                        case "enabled": currentRepo.Enabled = (value == "1" || value.ToLower() == "true"); break;
-                        case "gpgcheck": currentRepo.GpgCheck = (value == "1" || value.ToLower() == "true"); break;
+                        case "metalink": currentRepo.Metalink = value; break;
+                        case "mirrorlist": currentRepo.Mirrorlist = value; break;
+                        case "enabled": currentRepo.Enabled = (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase)); break;
+                        case "gpgcheck": currentRepo.GpgCheck = (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase)); break;
                         case "gpgkey": currentRepo.GpgKey = value; break;
+                        case "priority":
+                            if (int.TryParse(value, out var prio)) currentRepo.Priority = prio;
+                            break;
+                        case "cost":
+                            if (int.TryParse(value, out var cost)) currentRepo.Cost = cost;
+                            break;
+                        case "exclude": currentRepo.Exclude = value; break;
+                        case "includepkgs": currentRepo.IncludePkgs = value; break;
                     }
                 }
             }
@@ -74,9 +89,6 @@ public static class RepoConfigParser
         return allRepos;
     }
 
-    /// <summary>
-    /// Serializes a single RepoConfig to INI-style .repo format text.
-    /// </summary>
     public static string Serialize(RepoConfig repo)
     {
         var sb = new System.Text.StringBuilder();
@@ -84,21 +96,27 @@ public static class RepoConfigParser
         sb.AppendLine($"name={repo.Name}");
         if (!string.IsNullOrEmpty(repo.BaseUrl))
             sb.AppendLine($"baseurl={repo.BaseUrl}");
+        if (!string.IsNullOrEmpty(repo.Metalink))
+            sb.AppendLine($"metalink={repo.Metalink}");
+        if (!string.IsNullOrEmpty(repo.Mirrorlist))
+            sb.AppendLine($"mirrorlist={repo.Mirrorlist}");
         sb.AppendLine($"enabled={Convert.ToInt32(repo.Enabled)}");
         sb.AppendLine($"gpgcheck={Convert.ToInt32(repo.GpgCheck)}");
         if (!string.IsNullOrEmpty(repo.GpgKey))
             sb.AppendLine($"gpgkey={repo.GpgKey}");
+        if (repo.Priority != 99)
+            sb.AppendLine($"priority={repo.Priority}");
+        if (repo.Cost != 1000)
+            sb.AppendLine($"cost={repo.Cost}");
+        if (!string.IsNullOrEmpty(repo.Exclude))
+            sb.AppendLine($"exclude={repo.Exclude}");
+        if (!string.IsNullOrEmpty(repo.IncludePkgs))
+            sb.AppendLine($"includepkgs={repo.IncludePkgs}");
         return sb.ToString();
     }
 
-    /// <summary>
-    /// Writes a collection of repos back to their respective .repo files.
-    /// Repos that share the same SourceFile are written together.
-    /// New repos (no SourceFile) are written to a new file.
-    /// </summary>
     public static void SaveAllRepos(Dictionary<string, RepoConfig> repos)
     {
-        // Group by source file
         var grouped = new Dictionary<string, List<RepoConfig>>();
         var orphans = new List<RepoConfig>();
 
@@ -116,7 +134,6 @@ public static class RepoConfigParser
             }
         }
 
-        // Write each group back to its file
         foreach (var kvp in grouped)
         {
             var content = new System.Text.StringBuilder();
@@ -127,13 +144,11 @@ public static class RepoConfigParser
             File.WriteAllText(kvp.Key, content.ToString());
         }
 
-        // Write orphans to a new file
         if (orphans.Count > 0)
         {
-            // Determine directory from existing repos, or fallback
             string? dir = repos.Values
                 .FirstOrDefault(r => !string.IsNullOrEmpty(r.SourceFile))?.SourceFile;
-            
+
             if (dir != null)
                 dir = Path.GetDirectoryName(dir);
             else
@@ -150,20 +165,15 @@ public static class RepoConfigParser
         }
     }
 
-    /// <summary>
-    /// Removes a repo by rewriting its source file without it.
-    /// If the file becomes empty, it is deleted.
-    /// </summary>
     public static void RemoveRepo(Dictionary<string, RepoConfig> allRepos, string repoId)
     {
         if (!allRepos.TryGetValue(repoId, out var repo)) return;
-        
+
         allRepos.Remove(repoId);
 
         if (string.IsNullOrEmpty(repo.SourceFile) || !File.Exists(repo.SourceFile))
             return;
 
-        // Collect remaining repos that belong to the same file
         var sameFileRepos = allRepos.Values
             .Where(r => r.SourceFile == repo.SourceFile)
             .ToList();
@@ -183,13 +193,18 @@ public static class RepoConfigParser
         }
     }
 
-    private static string GetReleaseVer()
+    private static (string major, string minor) GetReleaseVerParts()
     {
-        // 1. Priority: Environment Variable (Useful for bootstrapping)
+        string version = GetRawReleaseVer();
+        var parts = version.Split('.', 2);
+        return (parts[0], parts.Length > 1 ? parts[1] : "");
+    }
+
+    private static string GetRawReleaseVer()
+    {
         var envVar = Environment.GetEnvironmentVariable("AURORA_RELEASEVER");
         if (!string.IsNullOrEmpty(envVar)) return envVar;
 
-        // 2. Try to read from host /etc/os-release
         try {
             if (File.Exists("/etc/os-release")) {
                 var lines = File.ReadAllLines("/etc/os-release");
@@ -200,8 +215,7 @@ public static class RepoConfigParser
             }
         } catch { }
 
-        // 3. Fallback to your current server's version
-        return "26.03"; 
+        return "26.03";
     }
 
     private static string GetBaseArch()

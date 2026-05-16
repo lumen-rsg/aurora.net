@@ -19,6 +19,7 @@ public class Package
     // NEW: Track which repository this package belongs to
     public string RepositoryId { get; set; } = string.Empty; 
     public string Checksum { get; set; } = string.Empty;
+    public string ChecksumType { get; set; } = "sha256";
     public long Size { get; set; }
     public long InstalledSize { get; set; }
 

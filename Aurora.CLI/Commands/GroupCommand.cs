@@ -10,6 +10,7 @@ namespace Aurora.CLI.Commands;
 
 public class GroupCommand : ICommand
 {
+    public bool RequiresRoot => true;
     public string Name => "group";
     public string Description => "Manage package groups (environments, collections)";
 

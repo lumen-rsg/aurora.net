@@ -10,6 +10,7 @@ public class CleanupCommand : ICommand
 {
     public string Name => "cleanup";
     public string Description => "Remove orphaned packages no longer required by any installed package";
+    public bool RequiresRoot => true;
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {

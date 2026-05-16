@@ -11,6 +11,7 @@ namespace Aurora.CLI.Commands;
 
 public class HistoryCommand : ICommand
 {
+    public bool RequiresRoot => true;
     public string Name => "history";
     public string Description => "View transaction history and perform rollbacks";
 

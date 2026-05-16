@@ -9,6 +9,7 @@ public class RemoveCommand : ICommand
 {
     public string Name => "remove";
     public string Description => "Remove packages";
+    public bool RequiresRoot => true;
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {

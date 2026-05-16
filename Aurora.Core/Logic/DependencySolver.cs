@@ -504,7 +504,7 @@ public class DependencySolver
 
                 var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 
-                if (!plan.ContainsKey(chosenPkg.Name))
+                if (!plan.ContainsKey(chosenPkg.Name) && !ConflictsWithPlan(chosenPkg, plan))
                 {
                     plan[chosenPkg.Name] = chosenPkg;
                     resolvedCount++;
@@ -569,7 +569,7 @@ public class DependencySolver
 
             var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 
-            if (!plan.ContainsKey(chosenPkg.Name))
+            if (!plan.ContainsKey(chosenPkg.Name) && !ConflictsWithPlan(chosenPkg, plan))
             {
                 plan[chosenPkg.Name] = chosenPkg;
                 resolvedCount++;
@@ -630,6 +630,37 @@ public class DependencySolver
             .ToList();
 
         return sorted[0].Pkg;
+    }
+
+    // ─── Conflict Detection ──────────────────────────────────────────
+
+    /// <summary>
+    ///     Checks whether adding a package would create a conflict with
+    ///     anything already in the plan. Uses bare name matching against
+    ///     each package's Conflicts list.
+    /// </summary>
+    private static bool ConflictsWithPlan(Package candidate, Dictionary<string, Package> plan)
+    {
+        // Check if candidate declares conflicts with any planned package
+        foreach (var conflict in candidate.Conflicts)
+        {
+            var conflictName = ParseProvideName(conflict);
+            if (plan.ContainsKey(conflictName))
+                return true;
+        }
+
+        // Check if any planned package declares conflicts with candidate
+        foreach (var planned in plan.Values)
+        {
+            foreach (var conflict in planned.Conflicts)
+            {
+                var conflictName = ParseProvideName(conflict);
+                if (conflictName == candidate.Name)
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     // ─── Topological Sort (Dependency-First Order) ────────────────────

@@ -1,23 +1,14 @@
 using Aurora.Core.Logging;
 using Aurora.Core.Models;
+using Aurora.Core.Parsing;
 
 namespace Aurora.Core.State;
 
-/// <summary>
-///     Centralized, performant loader for repository package databases.
-///     Uses a two-tier cache (in-memory + on-disk JSON) to avoid re-querying
-///     SQLite databases on every invocation.
-/// </summary>
 public static class RepoLoader
 {
-    // --- In-memory cache (single process invocation) ---
     private static List<Package>? _memoryCache;
     private static string? _memoryCacheRepoDir;
 
-    /// <summary>
-    ///     Invalidates both in-memory and on-disk caches.
-    ///     Called after a successful sync operation.
-    /// </summary>
     public static void InvalidateCache(string? repoDir = null)
     {
         _memoryCache = null;
@@ -29,16 +20,8 @@ public static class RepoLoader
         }
     }
 
-    /// <summary>
-    ///     Loads all packages from all repository .sqlite databases in the given directory.
-    ///     Uses a two-tier cache strategy:
-    ///       1. In-memory cache (hot) — zero I/O if already loaded in this process
-    ///       2. On-disk JSON cache (warm) — fast deserialization, skips SQLite queries
-    ///       3. Cold start — queries SQLite in parallel, then populates both caches
-    /// </summary>
     public static List<Package> LoadAllPackages(string repoDir)
     {
-        // Tier 1: In-memory cache
         if (_memoryCache != null && _memoryCacheRepoDir == repoDir)
         {
             return _memoryCache;
@@ -47,7 +30,6 @@ public static class RepoLoader
         var repoFiles = DiscoverRepoDatabases(repoDir);
         if (repoFiles.Length == 0) return new List<Package>();
 
-        // Tier 2: On-disk JSON cache
         if (RepoCache.IsCacheValid(repoDir, repoFiles))
         {
             var cached = RepoCache.ReadCache(repoDir);
@@ -60,7 +42,7 @@ public static class RepoLoader
             }
         }
 
-        // Tier 3: Cold start — load from SQLite databases in parallel
+        // Cold start — load from SQLite or XML databases in parallel
         var allPackages = new List<Package>[repoFiles.Length];
 
         Parallel.For(0, repoFiles.Length, i =>
@@ -68,9 +50,7 @@ public static class RepoLoader
             var dbFile = repoFiles[i];
             try
             {
-                using var db = new RpmRepoDb(dbFile);
-                string repoId = Path.GetFileNameWithoutExtension(dbFile);
-                allPackages[i] = db.GetAllPackages(repoId);
+                allPackages[i] = LoadSingleRepo(dbFile);
             }
             catch (Exception ex)
             {
@@ -79,14 +59,15 @@ public static class RepoLoader
             }
         });
 
-        // Calculate total capacity to avoid reallocations
+        // Merge filelists data for repos that need it
+        MergeFilelists(repoDir, allPackages, repoFiles);
+
         int totalCount = 0;
         foreach (var list in allPackages) totalCount += list.Count;
 
         var result = new List<Package>(totalCount);
         foreach (var list in allPackages) result.AddRange(list);
 
-        // Populate caches
         RepoCache.WriteCache(repoDir, repoFiles, result);
         _memoryCache = result;
         _memoryCacheRepoDir = repoDir;
@@ -94,11 +75,6 @@ public static class RepoLoader
         return result;
     }
 
-    /// <summary>
-    ///     Loads all packages indexed by name (case-insensitive).
-    ///     Useful for fast lookups (e.g., InfoCommand, DependencySolver).
-    ///     Reuses the in-memory cache if available.
-    /// </summary>
     public static Dictionary<string, List<Package>> LoadPackagesByName(string repoDir)
     {
         var packages = LoadAllPackages(repoDir);
@@ -117,13 +93,105 @@ public static class RepoLoader
         return dict;
     }
 
-    /// <summary>
-    ///     Discovers all .sqlite repo database files in the given directory.
-    ///     Returns an empty array if the directory doesn't exist.
-    /// </summary>
     public static string[] DiscoverRepoDatabases(string repoDir)
     {
         if (!Directory.Exists(repoDir)) return Array.Empty<string>();
-        return Directory.GetFiles(repoDir, "*.sqlite");
+
+        var files = new List<string>();
+        files.AddRange(Directory.GetFiles(repoDir, "*.sqlite"));
+
+        // Only pick up _primary.xml files that don't have a corresponding .sqlite
+        foreach (var xmlFile in Directory.GetFiles(repoDir, "*_primary.xml"))
+        {
+            var repoId = xmlFile.Replace("_primary.xml", "");
+            var sqlitePath = Path.Combine(repoDir, $"{Path.GetFileName(repoId)}.sqlite");
+            if (!File.Exists(sqlitePath))
+                files.Add(xmlFile);
+        }
+
+        return files.ToArray();
+    }
+
+    private static List<Package> LoadSingleRepo(string dbFile)
+    {
+        var fileName = Path.GetFileName(dbFile);
+
+        if (fileName.EndsWith("_primary.xml"))
+        {
+            // XML primary — extract repo ID from filename: "{repoId}_primary.xml"
+            var repoId = fileName.Substring(0, fileName.Length - "_primary.xml".Length);
+            return PrimaryXmlParser.ParseFile(dbFile, repoId);
+        }
+
+        // SQLite primary
+        var sqliteRepoId = Path.GetFileNameWithoutExtension(dbFile);
+        using var db = new RpmRepoDb(dbFile);
+        return db.GetAllPackages(sqliteRepoId);
+    }
+
+    private static void MergeFilelists(string repoDir, List<Package>[] allPackages, string[] repoFiles)
+    {
+        // Build a checksum → package lookup for fast matching
+        var pkgByChecksum = new Dictionary<string, Package>(StringComparer.OrdinalIgnoreCase);
+        foreach (var list in allPackages)
+        {
+            foreach (var pkg in list)
+            {
+                if (!string.IsNullOrEmpty(pkg.Checksum))
+                    pkgByChecksum[pkg.Checksum] = pkg;
+            }
+        }
+
+        // Check for standalone filelists files
+        if (!Directory.Exists(repoDir)) return;
+
+        // filelists XML
+        foreach (var flFile in Directory.GetFiles(repoDir, "*_filelists.xml"))
+        {
+            try
+            {
+                var fileMap = FilelistsXmlParser.ParseFile(flFile);
+                foreach (var kvp in fileMap)
+                {
+                    if (pkgByChecksum.TryGetValue(kvp.Key, out var pkg))
+                    {
+                        foreach (var file in kvp.Value)
+                        {
+                            if (!pkg.Provides.Contains(file))
+                                pkg.Provides.Add(file);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AuLogger.Error($"Failed to load filelists XML {Path.GetFileName(flFile)}: {ex.Message}");
+            }
+        }
+
+        // filelists SQLite (separate from primary.sqlite)
+        foreach (var flSqlite in Directory.GetFiles(repoDir, "*_filelists.sqlite"))
+        {
+            try
+            {
+                using var flDb = new RpmRepoDb(flSqlite);
+                var fileMap = flDb.GetFileListsByChecksum();
+                foreach (var kvp in fileMap)
+                {
+                    if (pkgByChecksum.TryGetValue(kvp.Key, out var pkg))
+                    {
+                        foreach (var file in kvp.Value)
+                        {
+                            if (!pkg.Provides.Contains(file))
+                                pkg.Provides.Add(file);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AuLogger.Error($"Failed to load filelists SQLite {Path.GetFileName(flSqlite)}: {ex.Message}");
+            }
+        }
     }
 }

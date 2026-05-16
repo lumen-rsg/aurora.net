@@ -14,6 +14,7 @@ public class InstallSystemCommand : ICommand
 {
     public string Name => "system-install";
     public string Description => "Install Lumina Linux to a target block device";
+    public bool RequiresRoot => true;
 
     private const string MountPoint = "/mnt";
 

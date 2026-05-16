@@ -242,6 +242,47 @@ public class RpmRepoDb : IDisposable
         return new List<Package>(packages.Values);
     }
 
+    public Dictionary<string, List<string>> GetFileListsByChecksum()
+    {
+        var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"
+                SELECT p.pkgId, f.name
+                FROM files f
+                JOIN packages p ON f.pkgKey = p.pkgKey
+                WHERE (f.name LIKE '/usr/bin/%'
+                    OR f.name LIKE '/bin/%'
+                    OR f.name LIKE '/usr/sbin/%'
+                    OR f.name LIKE '/sbin/%'
+                    OR f.name LIKE '/etc/%')";
+            using var reader = cmd.ExecuteReader();
+            int idPkgId = reader.GetOrdinal("pkgId");
+            int idName = reader.GetOrdinal("name");
+
+            while (reader.Read())
+            {
+                var pkgId = reader.GetString(idPkgId);
+                var file = reader.GetString(idName);
+
+                if (!result.TryGetValue(pkgId, out var list))
+                {
+                    list = new List<string>();
+                    result[pkgId] = list;
+                }
+                list.Add(file);
+            }
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException)
+        {
+            // files table may not exist in standalone filelists DBs
+        }
+
+        return result;
+    }
+
     public void Dispose()
     {
         _connection?.Close();

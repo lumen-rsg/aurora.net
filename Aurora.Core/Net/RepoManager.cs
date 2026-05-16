@@ -23,11 +23,13 @@ public class RepoManager
     private readonly HttpClient _client;
     public bool SkipSignatureCheck { get; set; } = false;
 
+    // Per-session mirror resolution cache: repoId -> resolved base URL
+    private readonly Dictionary<string, string> _resolvedUrls = new();
+
     public RepoManager(string rootPath)
     {
         _rootPath = rootPath;
 
-        // Force IPv4 to prevent 30-second timeouts on misconfigured mirrors
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
@@ -49,9 +51,8 @@ public class RepoManager
     public async Task SyncRepositoriesAsync(Action<string, string> onProgress)
     {
         var reposDir = PathHelper.GetPath(_rootPath, "etc/yum.repos.d");
-       
-        // FIX: Correctly scope the if-statement
-        if (!Directory.Exists(reposDir)) 
+
+        if (!Directory.Exists(reposDir))
         {
             AuLogger.Error("No repositories configured at etc/yum.repos.d");
             return;
@@ -66,21 +67,24 @@ public class RepoManager
 
         foreach (var repo in repos.Values.Where(r => r.Enabled))
         {
-            onProgress(repo.Name, "Syncing repomd.xml...");
+            onProgress(repo.Name, "Resolving mirror...");
 
             try
             {
-                // 1. Fetch repomd.xml
-                var repomdPath = Path.Combine(dbDir, $"{repo.Id}_repomd.xml");
-                await FetchFile(repo.Url, "repodata/repomd.xml", repomdPath);
+                var baseUrl = await ResolveRepoUrlAsync(repo);
 
-                // 2. Verify Signature (if provided)
+                // 1. Fetch repomd.xml
+                onProgress(repo.Name, "Syncing repomd.xml...");
+                var repomdPath = Path.Combine(dbDir, $"{repo.Id}_repomd.xml");
+                await FetchFile(baseUrl, "repodata/repomd.xml", repomdPath);
+
+                // 2. Verify GPG signature
                 if (!SkipSignatureCheck)
                 {
                     var sigPath = repomdPath + ".asc";
                     try
                     {
-                        await FetchFile(repo.Url, "repodata/repomd.xml.asc", sigPath);
+                        await FetchFile(baseUrl, "repodata/repomd.xml.asc", sigPath);
                         if (!GpgHelper.VerifySignature(repomdPath, sigPath, Directory.Exists(gpgHome) ? gpgHome : null))
                         {
                             throw new Exception("Invalid GPG Signature for repomd.xml!");
@@ -92,31 +96,85 @@ public class RepoManager
                     }
                 }
 
-                // 3. Parse repomd.xml to find the primary SQLite DB
+                // 3. Parse repomd.xml — get all data refs at once
                 var xmlContent = await File.ReadAllTextAsync(repomdPath);
-                var primaryDbInfo = RepoMdParser.GetPrimaryDbInfo(xmlContent);
+                var allRefs = RepoMdParser.GetAllDataRefs(xmlContent);
 
-                if (primaryDbInfo == null || string.IsNullOrEmpty(primaryDbInfo.Location))
+                // 4. Download primary metadata (prefer primary_db, fall back to primary.xml)
+                var primaryRef = allRefs.GetValueOrDefault("primary_db") ?? allRefs.GetValueOrDefault("primary");
+                if (primaryRef == null || string.IsNullOrEmpty(primaryRef.Location))
+                    throw new Exception("Could not locate primary_db or primary in repomd.xml");
+
+                onProgress(repo.Name, $"Downloading primary ({primaryRef.Type})...");
+                var isPrimaryXml = primaryRef.Type == "primary";
+                var primaryExt = Path.GetExtension(primaryRef.Location);
+                var compressedPrimary = Path.Combine(dbDir, $"{repo.Id}_primary{primaryExt}.tmp");
+                await FetchFile(baseUrl, primaryRef.Location, compressedPrimary);
+
+                // Verify compressed checksum
+                if (!SkipSignatureCheck && !string.IsNullOrEmpty(primaryRef.ChecksumValue))
                 {
-                    throw new Exception("Could not locate primary_db in repomd.xml");
+                    if (!HashHelper.VerifyFile(compressedPrimary, primaryRef.ChecksumValue, primaryRef.ChecksumType))
+                    {
+                        File.Delete(compressedPrimary);
+                        throw new InvalidDataException($"Checksum mismatch for {primaryRef.Type}");
+                    }
                 }
 
-                onProgress(repo.Name, "Downloading primary database...");
-
-                // 4. Download the compressed SQLite DB
-                string extension = Path.GetExtension(primaryDbInfo.Location); // usually .gz, .bz2, or .zst
-                var compressedDbPath = Path.Combine(dbDir, $"{repo.Id}_primary{extension}");
-                await FetchFile(repo.Url, primaryDbInfo.Location, compressedDbPath);
-
-                // 5. Decompress into the final SQLite file
+                // Decompress
                 onProgress(repo.Name, "Decompressing...");
-                var targetSqliteFile = Path.Combine(dbDir, $"{repo.Id}.sqlite");
-                await DecompressDatabaseAsync(compressedDbPath, targetSqliteFile);
+                var primaryTarget = isPrimaryXml
+                    ? Path.Combine(dbDir, $"{repo.Id}_primary.xml")
+                    : Path.Combine(dbDir, $"{repo.Id}.sqlite");
+                await DecompressDatabaseAsync(compressedPrimary, primaryTarget, primaryExt);
 
-                // Cleanup
-                File.Delete(compressedDbPath);
+                // Verify open checksum (decompressed content)
+                if (!SkipSignatureCheck && !string.IsNullOrEmpty(primaryRef.OpenChecksumValue))
+                {
+                    if (!HashHelper.VerifyFile(primaryTarget, primaryRef.OpenChecksumValue, primaryRef.OpenChecksumType))
+                    {
+                        File.Delete(primaryTarget);
+                        throw new InvalidDataException($"Open checksum mismatch for {primaryRef.Type}");
+                    }
+                }
+
+                File.Delete(compressedPrimary);
+
+                // 5. Download filelists (optional)
+                var filelistsRef = allRefs.GetValueOrDefault("filelists_db") ?? allRefs.GetValueOrDefault("filelists");
+                if (filelistsRef != null && !string.IsNullOrEmpty(filelistsRef.Location))
+                {
+                    onProgress(repo.Name, "Downloading filelists...");
+                    var flExt = Path.GetExtension(filelistsRef.Location);
+                    var isFilelistsXml = filelistsRef.Type == "filelists";
+                    var compressedFl = Path.Combine(dbDir, $"{repo.Id}_filelists{flExt}.tmp");
+                    try
+                    {
+                        await FetchFile(baseUrl, filelistsRef.Location, compressedFl);
+
+                        if (!SkipSignatureCheck && !string.IsNullOrEmpty(filelistsRef.ChecksumValue))
+                        {
+                            if (!HashHelper.VerifyFile(compressedFl, filelistsRef.ChecksumValue, filelistsRef.ChecksumType))
+                            {
+                                File.Delete(compressedFl);
+                                throw new InvalidDataException($"Checksum mismatch for {filelistsRef.Type}");
+                            }
+                        }
+
+                        var flTarget = isFilelistsXml
+                            ? Path.Combine(dbDir, $"{repo.Id}_filelists.xml")
+                            : Path.Combine(dbDir, $"{repo.Id}_filelists.sqlite");
+                        await DecompressDatabaseAsync(compressedFl, flTarget, flExt);
+                        File.Delete(compressedFl);
+                    }
+                    catch (Exception ex)
+                    {
+                        AuLogger.Debug($"Failed to download filelists for {repo.Name}: {ex.Message}");
+                        try { File.Delete(compressedFl); } catch { }
+                    }
+                }
+
                 File.Delete(repomdPath);
-
                 onProgress(repo.Name, "Done");
             }
             catch (Exception ex)
@@ -127,10 +185,6 @@ public class RepoManager
         }
     }
 
-    /// <summary>
-    ///     Synchronizes comps (package group) data from all enabled repositories.
-    ///     Downloads and parses comps.xml, then stores as JSON for fast CLI reads.
-    /// </summary>
     public async Task SyncCompsAsync(Action<string, string> onProgress)
     {
         var reposDir = PathHelper.GetPath(_rootPath, "etc/yum.repos.d");
@@ -146,30 +200,40 @@ public class RepoManager
         {
             try
             {
-                // 1. Fetch repomd.xml to find group data location
+                var baseUrl = await ResolveRepoUrlAsync(repo);
+
                 var repomdPath = Path.Combine(dbDir, $"{repo.Id}_repomd_comps.xml");
-                await FetchFile(repo.Url, "repodata/repomd.xml", repomdPath);
+                await FetchFile(baseUrl, "repodata/repomd.xml", repomdPath);
                 var xmlContent = await File.ReadAllTextAsync(repomdPath);
                 var groupInfo = RepoMdParser.GetGroupInfo(xmlContent);
 
                 if (groupInfo == null || string.IsNullOrEmpty(groupInfo.Location))
                 {
-                    // No comps data for this repo — that's fine, not all repos have groups
                     File.Delete(repomdPath);
                     continue;
                 }
 
                 onProgress(repo.Name, "Downloading comps...");
 
-                // 2. Download the comps file (may be compressed)
                 var compressedCompsPath = Path.Combine(dbDir, $"{repo.Id}_comps.xml.tmp");
-                await FetchFile(repo.Url, groupInfo.Location, compressedCompsPath);
+                await FetchFile(baseUrl, groupInfo.Location, compressedCompsPath);
 
-                // 3. Decompress if needed, or use directly
+                // Verify checksum
+                if (!SkipSignatureCheck && !string.IsNullOrEmpty(groupInfo.ChecksumValue))
+                {
+                    if (!HashHelper.VerifyFile(compressedCompsPath, groupInfo.ChecksumValue, groupInfo.ChecksumType))
+                    {
+                        File.Delete(compressedCompsPath);
+                        File.Delete(repomdPath);
+                        throw new InvalidDataException("Checksum mismatch for comps");
+                    }
+                }
+
                 var compsXmlPath = Path.Combine(dbDir, $"{repo.Id}_comps.xml");
                 if (groupInfo.Location.EndsWith(".gz") || groupInfo.Location.EndsWith(".bz2") || groupInfo.Location.EndsWith(".zst"))
                 {
-                    await DecompressDatabaseAsync(compressedCompsPath, compsXmlPath);
+                    var compsExt = Path.GetExtension(groupInfo.Location);
+                    await DecompressDatabaseAsync(compressedCompsPath, compsXmlPath, compsExt);
                     File.Delete(compressedCompsPath);
                 }
                 else
@@ -177,11 +241,9 @@ public class RepoManager
                     File.Move(compressedCompsPath, compsXmlPath, overwrite: true);
                 }
 
-                // 4. Parse comps.xml and store as JSON
                 var compsXml = await File.ReadAllTextAsync(compsXmlPath);
                 var (groups, categories) = CompsParser.Parse(compsXml);
 
-                // Tag each group/category with its repo ID
                 foreach (var g in groups) g.RepoId = repo.Id;
                 foreach (var c in categories) c.RepoId = repo.Id;
 
@@ -191,7 +253,6 @@ public class RepoManager
                 var jsonPath = Path.Combine(dbDir, $"{repo.Id}_comps.json");
                 await File.WriteAllTextAsync(jsonPath, jsonData);
 
-                // Cleanup XML files
                 File.Delete(compsXmlPath);
                 File.Delete(repomdPath);
 
@@ -200,14 +261,10 @@ public class RepoManager
             catch (Exception ex)
             {
                 AuLogger.Error($"Failed to sync comps for '{repo.Name}': {ex.Message}");
-                // Non-fatal: comps sync failure shouldn't block the main sync
             }
         }
     }
 
-    /// <summary>
-    ///     Loads all cached comps data from disk (JSON files produced by SyncCompsAsync).
-    /// </summary>
     public static List<PackageGroup> LoadAllGroups(string sysRoot)
     {
         var dbDir = PathHelper.GetPath(sysRoot, "var/lib/aurora");
@@ -233,9 +290,6 @@ public class RepoManager
         return allGroups;
     }
 
-    /// <summary>
-    ///     Loads all cached categories from disk.
-    /// </summary>
     public static List<PackageCategory> LoadAllCategories(string sysRoot)
     {
         var dbDir = PathHelper.GetPath(sysRoot, "var/lib/aurora");
@@ -261,9 +315,6 @@ public class RepoManager
         return allCategories;
     }
 
-    /// <summary>
-    ///     Serializable container for comps data (groups + categories).
-    /// </summary>
     private class CompsData
     {
         public List<PackageGroup> Groups { get; set; } = new();
@@ -279,7 +330,8 @@ public class RepoManager
 
         if (File.Exists(cachePath))
         {
-            if (string.IsNullOrEmpty(pkg.Checksum) || HashHelper.ComputeFileHash(cachePath) == pkg.Checksum)
+            if (string.IsNullOrEmpty(pkg.Checksum) ||
+                HashHelper.VerifyFile(cachePath, pkg.Checksum, string.IsNullOrEmpty(pkg.ChecksumType) ? "sha256" : pkg.ChecksumType))
             {
                 var info = new FileInfo(cachePath);
                 onProgress(info.Length, info.Length);
@@ -287,14 +339,13 @@ public class RepoManager
             }
             File.Delete(cachePath);
         }
-        
+
         Directory.CreateDirectory(cacheDir);
 
         var reposDir = PathHelper.GetPath(_rootPath, "etc/yum.repos.d");
         if (!Directory.Exists(reposDir)) throw new Exception("No repolist directory found.");
         var repos = RepoConfigParser.ParseDirectory(reposDir);
-        
-        // --- CRITICAL FIX: Direct Repository Target ---
+
         if (!repos.TryGetValue(pkg.RepositoryId, out var targetRepo) || !targetRepo.Enabled)
         {
             throw new Exception($"Cannot download {pkg.Name}: Repository '{pkg.RepositoryId}' is missing or disabled.");
@@ -302,22 +353,20 @@ public class RepoManager
 
         try
         {
-            // PATH HEURISTIC FIX:
-            // If baseurl is ".../x64/lumina-core" and LocationHref is "lumina-core/Packages/..."
-            // we need to strip the redundant "lumina-core/" from the LocationHref.
-            string safeHref = pkg.LocationHref;
-            string repoNameSegment = pkg.RepositoryId + "/"; 
-            if (safeHref.StartsWith(repoNameSegment))
-            {
-                safeHref = safeHref.Substring(repoNameSegment.Length);
-            }
+            var baseUrl = await ResolveRepoUrlAsync(targetRepo);
 
-            await FetchFile(targetRepo.Url, safeHref, cachePath, onProgress);
+            // Strip redundant repo-id prefix from location href
+            string safeHref = pkg.LocationHref;
+            string repoNameSegment = pkg.RepositoryId + "/";
+            if (safeHref.StartsWith(repoNameSegment))
+                safeHref = safeHref.Substring(repoNameSegment.Length);
+
+            await FetchFile(baseUrl, safeHref, cachePath, onProgress);
 
             if (!string.IsNullOrEmpty(pkg.Checksum))
             {
-                var actualSum = HashHelper.ComputeFileHash(cachePath);
-                if (!string.Equals(actualSum, pkg.Checksum, StringComparison.OrdinalIgnoreCase))
+                var algo = string.IsNullOrEmpty(pkg.ChecksumType) ? "sha256" : pkg.ChecksumType;
+                if (!HashHelper.VerifyFile(cachePath, pkg.Checksum, algo))
                 {
                     File.Delete(cachePath);
                     throw new InvalidDataException("Integrity mismatch.");
@@ -331,27 +380,118 @@ public class RepoManager
         }
         catch (Exception ex)
         {
-            Spectre.Console.AnsiConsole.MarkupLine($"[yellow]DEBUG Error for {pkg.Name}: {ex.Message}[/]");
+            AnsiConsole.MarkupLine($"[yellow]DEBUG Error for {pkg.Name}: {ex.Message}[/]");
             if (File.Exists(cachePath)) File.Delete(cachePath);
         }
 
-        return null; // Failed to download from its assigned repo
+        return null;
+    }
+
+    // --- Mirror Resolution ---
+
+    private async Task<string> ResolveRepoUrlAsync(Aurora.Core.Contract.RepoConfig repo)
+    {
+        // Check session cache
+        if (_resolvedUrls.TryGetValue(repo.Id, out var cached))
+            return cached;
+
+        string resolved;
+
+        // 1. Direct baseurl (fast path)
+        if (!string.IsNullOrEmpty(repo.BaseUrl))
+        {
+            resolved = repo.BaseUrl;
+        }
+        // 2. Metalink
+        else if (!string.IsNullOrEmpty(repo.Metalink))
+        {
+            resolved = await ResolveMetalinkAsync(repo.Metalink, repo.Id);
+        }
+        // 3. Mirrorlist
+        else if (!string.IsNullOrEmpty(repo.Mirrorlist))
+        {
+            resolved = await ResolveMirrorlistAsync(repo.Mirrorlist, repo.Id);
+        }
+        else
+        {
+            throw new Exception($"Repository '{repo.Id}' has no baseurl, metalink, or mirrorlist configured.");
+        }
+
+        repo.EffectiveUrl = resolved;
+        _resolvedUrls[repo.Id] = resolved;
+        return resolved;
+    }
+
+    private async Task<string> ResolveMetalinkAsync(string metalinkUrl, string repoId)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, metalinkUrl) { Version = HttpVersion.Version11 };
+            using var response = await _client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            var xml = await response.Content.ReadAsStringAsync();
+            var urls = MetalinkParser.ParseMirrorUrls(xml);
+
+            if (urls.Count == 0)
+                throw new Exception("Metalink returned no mirrors");
+
+            // Test first mirror with a HEAD request
+            foreach (var url in urls)
+            {
+                try
+                {
+                    var testUri = BuildUri(url, "repodata/repomd.xml");
+                    using var headReq = new HttpRequestMessage(HttpMethod.Head, testUri) { Version = HttpVersion.Version11 };
+                    using var headResp = await _client.SendAsync(headReq);
+                    if (headResp.IsSuccessStatusCode)
+                        return url.TrimEnd('/') + "/";
+                }
+                catch { /* try next mirror */ }
+            }
+
+            // If all HEAD requests fail, return first URL anyway
+            return urls[0].TrimEnd('/') + "/";
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Failed to resolve metalink for {repoId}: {ex.Message}");
+        }
+    }
+
+    private async Task<string> ResolveMirrorlistAsync(string mirrorlistUrl, string repoId)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, mirrorlistUrl) { Version = HttpVersion.Version11 };
+            using var response = await _client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            var content = await response.Content.ReadAsStringAsync();
+            var urls = MirrorlistParser.ParseMirrorlist(content);
+
+            if (urls.Count == 0)
+                throw new Exception("Mirrorlist returned no mirrors");
+
+            return urls[0].TrimEnd('/') + "/";
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Failed to resolve mirrorlist for {repoId}: {ex.Message}");
+        }
+    }
+
+    // --- HTTP Helpers ---
+
+    private static Uri BuildUri(string baseUrl, string relativePath)
+    {
+        var baseUri = new Uri(baseUrl.TrimEnd('/') + "/");
+        return new Uri(baseUri, relativePath.TrimStart('/'));
     }
 
     private async Task FetchFile(string baseUrl, string relativePath, string destination, Action<long?, long>? onProgress = null)
     {
-        // 1. Manually concatenate strings to avoid .NET's strict Uri(Uri, string) constructor rules
-        string separator = baseUrl.EndsWith("/") ? "" : "/";
-        
-        // Ensure relative path doesn't have a leading slash which would reset the base URL
-        string safeRelative = relativePath.TrimStart('/'); 
-        
-        // Escape colons (Epochs) and Spaces
-        safeRelative = safeRelative.Replace(":", "%3A").Replace(" ", "%20");
-        
-        string fullUrlString = baseUrl + separator + safeRelative;
-
-        var fullUri = new Uri(fullUrlString);
+        var fullUri = BuildUri(baseUrl, relativePath);
 
         if (fullUri.Scheme == "file")
         {
@@ -365,14 +505,12 @@ public class RepoManager
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, fullUri) { Version = HttpVersion.Version11 };
             using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            
-            // If it's a 404, this throws HttpRequestException which is gracefully caught by the outer loop
-            response.EnsureSuccessStatusCode(); 
+
+            response.EnsureSuccessStatusCode();
 
             var totalBytes = response.Content.Headers.ContentLength;
             await using var downloadStream = await response.Content.ReadAsStreamAsync();
-            
-            // Open the file ONLY after we confirm a 200 OK
+
             await using var fileStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
 
             var buffer = new byte[32768];
@@ -388,12 +526,11 @@ public class RepoManager
         }
     }
 
-    private async Task DecompressDatabaseAsync(string compressedFile, string outputFile)
+    private async Task DecompressDatabaseAsync(string compressedFile, string outputFile, string? originalExtension = null)
     {
-        var ext = Path.GetExtension(compressedFile).ToLowerInvariant();
+        var ext = (originalExtension ?? Path.GetExtension(compressedFile)).ToLowerInvariant();
         ProcessStartInfo psi;
 
-        // Route decompression based on Fedora/RPM standards
         if (ext == ".zst" || ext == ".zstd")
         {
             psi = new ProcessStartInfo("zstd", $"-d -q \"{compressedFile}\" -o \"{outputFile}\" -f");
@@ -405,6 +542,10 @@ public class RepoManager
         else if (ext == ".bz2")
         {
             psi = new ProcessStartInfo("/bin/sh", $"-c \"bzip2 -d -c '{compressedFile}' > '{outputFile}'\"");
+        }
+        else if (ext == ".xz")
+        {
+            psi = new ProcessStartInfo("/bin/sh", $"-c \"xz -d -c '{compressedFile}' > '{outputFile}'\"");
         }
         else
         {

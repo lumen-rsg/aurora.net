@@ -8,6 +8,7 @@ public class RecoverCommand : ICommand
 {
     public string Name => "recover";
     public string Description => "Rebuild the RPM database indexes";
+    public bool RequiresRoot => true;
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {

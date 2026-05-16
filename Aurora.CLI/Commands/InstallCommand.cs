@@ -12,6 +12,7 @@ public class InstallCommand : ICommand
 {
     public string Name => "install";
     public string Description => "Install packages (repo or local .rpm)";
+    public bool RequiresRoot => true;
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {

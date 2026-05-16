@@ -73,7 +73,8 @@ public class EditRepoCommand : ICommand
             .Border(TableBorder.Rounded)
             .AddColumn("ID")
             .AddColumn("Name")
-            .AddColumn("Base URL")
+            .AddColumn("URL / Mirror")
+            .AddColumn("Priority")
             .AddColumn("Enabled")
             .AddColumn("GPG Check")
             .AddColumn("Source File");
@@ -83,12 +84,22 @@ public class EditRepoCommand : ICommand
             var enabled = repo.Enabled ? "[green]✔ Yes[/]" : "[red]✘ No[/]";
             var gpg = repo.GpgCheck ? "[green]✔ Yes[/]" : "[grey]✘ No[/]";
             var source = repo.SourceFile != null ? Path.GetFileName(repo.SourceFile) : "-";
-            var url = string.IsNullOrEmpty(repo.BaseUrl) ? "-" : Markup.Escape(repo.BaseUrl);
+
+            string url;
+            if (!string.IsNullOrEmpty(repo.BaseUrl))
+                url = Markup.Escape(repo.BaseUrl);
+            else if (!string.IsNullOrEmpty(repo.Metalink))
+                url = "[blue]metalink:[/] " + Markup.Escape(repo.Metalink);
+            else if (!string.IsNullOrEmpty(repo.Mirrorlist))
+                url = "[blue]mirrorlist:[/] " + Markup.Escape(repo.Mirrorlist);
+            else
+                url = "-";
 
             table.AddRow(
                 Markup.Escape(repo.Id),
                 Markup.Escape(repo.Name),
                 url,
+                repo.Priority == 99 ? "-" : repo.Priority.ToString(),
                 enabled,
                 gpg,
                 Markup.Escape(source)
@@ -243,6 +254,13 @@ public class EditRepoCommand : ICommand
                     new Markup($"[bold]ID:[/]         {Markup.Escape(repo.Id)}"),
                     new Markup($"[bold]Name:[/]       {Markup.Escape(repo.Name)}"),
                     new Markup($"[bold]Base URL:[/]   {Markup.Escape(repo.BaseUrl)}"),
+                    string.IsNullOrEmpty(repo.Metalink)
+                        ? new Markup("[bold]Metalink:[/]   [grey]Not set[/]")
+                        : new Markup($"[bold]Metalink:[/]   {Markup.Escape(repo.Metalink)}"),
+                    string.IsNullOrEmpty(repo.Mirrorlist)
+                        ? new Markup("[bold]Mirrorlist:[/] [grey]Not set[/]")
+                        : new Markup($"[bold]Mirrorlist:[/] {Markup.Escape(repo.Mirrorlist)}"),
+                    new Markup($"[bold]Priority:[/]   {repo.Priority}"),
                     new Markup($"[bold]Enabled:[/]    {(repo.Enabled ? "[green]Yes[/]" : "[red]No[/]")}"),
                     new Markup($"[bold]GPG Check:[/]  {(repo.GpgCheck ? "[green]Yes[/]" : "[grey]No[/]")}"),
                     string.IsNullOrEmpty(repo.GpgKey)
@@ -335,6 +353,23 @@ public class EditRepoCommand : ICommand
                 .DefaultValue(repo.BaseUrl!)
                 .ShowDefaultValue(false));
 
+        var newMetalink = AnsiConsole.Prompt(
+            new TextPrompt<string>($"[yellow]Metalink[/] [{(string.IsNullOrEmpty(repo.Metalink) ? "none" : Markup.Escape(repo.Metalink))}]:")
+                .AllowEmpty()
+                .DefaultValue(repo.Metalink ?? string.Empty)
+                .ShowDefaultValue(false));
+
+        var newMirrorlist = AnsiConsole.Prompt(
+            new TextPrompt<string>($"[yellow]Mirrorlist[/] [{(string.IsNullOrEmpty(repo.Mirrorlist) ? "none" : Markup.Escape(repo.Mirrorlist))}]:")
+                .AllowEmpty()
+                .DefaultValue(repo.Mirrorlist ?? string.Empty)
+                .ShowDefaultValue(false));
+
+        var newPriority = AnsiConsole.Prompt(
+            new TextPrompt<int>($"[yellow]Priority[/] [{repo.Priority}]:")
+                .DefaultValue(repo.Priority)
+                .ShowDefaultValue(false));
+
         var newGpgKey = AnsiConsole.Prompt(
             new TextPrompt<string>($"[yellow]GPG Key[/] [{(string.IsNullOrEmpty(repo.GpgKey) ? "none" : Markup.Escape(repo.GpgKey))}]:")
                 .AllowEmpty()
@@ -346,6 +381,9 @@ public class EditRepoCommand : ICommand
         // Apply changes
         repo.Name = string.IsNullOrWhiteSpace(newName) ? repo.Name : newName.Trim();
         repo.BaseUrl = string.IsNullOrWhiteSpace(newUrl) ? repo.BaseUrl : newUrl.Trim();
+        repo.Metalink = string.IsNullOrWhiteSpace(newMetalink) ? repo.Metalink : newMetalink.Trim();
+        repo.Mirrorlist = string.IsNullOrWhiteSpace(newMirrorlist) ? repo.Mirrorlist : newMirrorlist.Trim();
+        repo.Priority = newPriority;
         repo.GpgKey = string.IsNullOrWhiteSpace(newGpgKey) ? repo.GpgKey : newGpgKey.Trim();
         repo.GpgCheck = newGpgCheck;
 
@@ -355,6 +393,9 @@ public class EditRepoCommand : ICommand
         {
             existing.Name = repo.Name;
             existing.BaseUrl = repo.BaseUrl;
+            existing.Metalink = repo.Metalink;
+            existing.Mirrorlist = repo.Mirrorlist;
+            existing.Priority = repo.Priority;
             existing.GpgKey = repo.GpgKey;
             existing.GpgCheck = repo.GpgCheck;
         }

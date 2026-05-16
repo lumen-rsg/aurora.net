@@ -11,6 +11,7 @@ public class UpdateCommand : ICommand
 {
     public string Name => "update";
     public string Description => "Update system packages from repositories";
+    public bool RequiresRoot => true;
 
     public async Task ExecuteAsync(CliConfiguration config, string[] args)
     {

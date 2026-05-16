@@ -88,6 +88,16 @@ class Program
         var cmdName = commandArgs[0].ToLowerInvariant();
         if (commandMap.TryGetValue(cmdName, out var cmd))
         {
+            if (cmd.RequiresRoot && Environment.GetEnvironmentVariable("AURORA_SKIP_ROOT_CHECK") != "1")
+            {
+                if (Environment.UserName != "root")
+                {
+                    AnsiConsole.MarkupLine($"[red]Error:[/] '{cmd.Name}' requires root privileges.");
+                    AnsiConsole.MarkupLine("[grey]Run with sudo or as root.[/]");
+                    return 1;
+                }
+            }
+
             try
             {
                 await cmd.ExecuteAsync(config, commandArgs.Skip(1).ToArray());

@@ -18,7 +18,8 @@ public static class CompsParser
         var groups = new List<PackageGroup>();
         var categories = new List<PackageCategory>();
 
-        using var reader = XmlReader.Create(new StringReader(xmlContent));
+        var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore, IgnoreWhitespace = true };
+        using var reader = XmlReader.Create(new StringReader(xmlContent), settings);
 
         while (reader.Read())
         {

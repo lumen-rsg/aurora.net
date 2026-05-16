@@ -35,14 +35,41 @@ public class SyncCommand : ICommand
         // --- STALE DATABASE CLEANUP ---
         if (Directory.Exists(dbDir))
         {
-            var existingDbs = Directory.GetFiles(dbDir, "*.sqlite");
-            foreach (var dbFile in existingDbs)
+            // SQLite databases
+            foreach (var dbFile in Directory.GetFiles(dbDir, "*.sqlite"))
             {
                 var repoId = Path.GetFileNameWithoutExtension(dbFile);
+                // Handle {repoId}_filelists.sqlite
+                if (repoId.EndsWith("_filelists"))
+                    repoId = repoId[..^"_filelists".Length];
                 if (!repos.ContainsKey(repoId) || !repos[repoId].Enabled)
                 {
-                    AnsiConsole.MarkupLine($"[grey]Removing stale database:[/] {repoId}");
+                    AnsiConsole.MarkupLine($"[grey]Removing stale database:[/] {Path.GetFileName(dbFile)}");
                     try { File.Delete(dbFile); } catch { }
+                }
+            }
+
+            // XML primary databases
+            foreach (var xmlFile in Directory.GetFiles(dbDir, "*_primary.xml"))
+            {
+                var fileName = Path.GetFileName(xmlFile);
+                var repoId = fileName.Substring(0, fileName.Length - "_primary.xml".Length);
+                if (!repos.ContainsKey(repoId) || !repos[repoId].Enabled)
+                {
+                    AnsiConsole.MarkupLine($"[grey]Removing stale database:[/] {fileName}");
+                    try { File.Delete(xmlFile); } catch { }
+                }
+            }
+
+            // XML filelists
+            foreach (var flFile in Directory.GetFiles(dbDir, "*_filelists.xml"))
+            {
+                var fileName = Path.GetFileName(flFile);
+                var repoId = fileName.Substring(0, fileName.Length - "_filelists.xml".Length);
+                if (!repos.ContainsKey(repoId) || !repos[repoId].Enabled)
+                {
+                    AnsiConsole.MarkupLine($"[grey]Removing stale filelists:[/] {fileName}");
+                    try { File.Delete(flFile); } catch { }
                 }
             }
         }

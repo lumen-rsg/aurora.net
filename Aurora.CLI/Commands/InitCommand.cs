@@ -9,6 +9,7 @@ public class InitCommand : ICommand
 {
     public string Name => "init";
     public string Description => "Initialize a new Aurora/RPM root environment";
+    public bool RequiresRoot => true;
 
     public Task ExecuteAsync(CliConfiguration config, string[] args)
     {
