@@ -459,7 +459,10 @@ public class DependencySolver
         var conditionPkgName = clean.Slice(ifIdx + 4).Trim().ToString();
 
         var conditionMet = plan.Values.Any(p => p.Name == conditionPkgName)
-                           || _installedNames.Contains(conditionPkgName);
+                           || _installedNames.Contains(conditionPkgName)
+                           || (_providersMap.TryGetValue(conditionPkgName, out var providers)
+                               && providers.Any(p => _installedNames.Contains(p.Pkg.Name)
+                                                    || plan.ContainsKey(p.Pkg.Name)));
 
         if (!conditionMet)
         {
