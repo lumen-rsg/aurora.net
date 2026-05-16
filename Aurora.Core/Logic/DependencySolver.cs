@@ -267,6 +267,8 @@ public class DependencySolver
             var nonConflicting = FilterNonConflictingWithInstalled(validCandidates);
             if (nonConflicting.Count > 0)
                 validCandidates = nonConflicting;
+            else if (requester != null)
+                continue; // Transitive dep: all candidates conflict with installed — skip it
 
             var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 

@@ -122,11 +122,15 @@ public class UpdateCommand : ICommand
 
         // Install
         AnsiConsole.Write(new Rule("[green]Applying Updates[/]").RuleStyle("grey"));
-        
+
+        // Pre-create system groups/users that packages require via virtual deps
+        // (e.g. group(mail), group(lp)) — RPM checks these at install time
+        SystemUpdater.PreCreateSystemIdentities(fullPlan, config.SysRoot);
+
         List<string> rpmLogs = new List<string>();
         try
         {
-            AnsiConsole.Status().Start("[cyan]Applying updates...[/]", ctx => 
+            AnsiConsole.Status().Start("[cyan]Applying updates...[/]", ctx =>
             {
                 SystemUpdater.ApplyUpdates(packagePaths.ToList(), config.SysRoot, config.Force, config.SkipGpg,
                     msg => rpmLogs.Add(msg));

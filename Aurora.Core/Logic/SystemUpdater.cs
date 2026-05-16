@@ -72,6 +72,75 @@ public class SystemUpdater
         return (fullPlan, additionalDeps);
     }
 
+    /// <summary>
+    /// Scans plan packages for group()/user() virtual identity requirements and
+    /// creates any missing system groups/users before the RPM transaction.
+    /// RPM checks these at install time even though no package provides them.
+    /// </summary>
+    public static void PreCreateSystemIdentities(IEnumerable<Package> packages, string sysRoot = "/", Action<string>? logAction = null)
+    {
+        var groups = new HashSet<string>();
+        var users = new HashSet<string>();
+
+        foreach (var pkg in packages)
+        {
+            foreach (var req in pkg.Requires)
+            {
+                if (req.StartsWith("group("))
+                {
+                    var closeParen = req.IndexOf(')');
+                    if (closeParen > 6)
+                        groups.Add(req.Substring(6, closeParen - 6));
+                }
+                else if (req.StartsWith("user("))
+                {
+                    var closeParen = req.IndexOf(')');
+                    if (closeParen > 5)
+                        users.Add(req.Substring(5, closeParen - 5));
+                }
+            }
+        }
+
+        foreach (var group in groups)
+        {
+            if (sysRoot == "/")
+                RunQuiet("groupadd", $"-f {group}", logAction);
+            else
+                RunQuiet("chroot", $"{sysRoot} groupadd -f {group}", logAction);
+        }
+
+        foreach (var user in users)
+        {
+            // system user, no login, no home
+            var args = sysRoot == "/"
+                ? $"-r -s /sbin/nologin {user}"
+                : $"{sysRoot} useradd -r -s /sbin/nologin {user}";
+            var cmd = sysRoot == "/" ? "useradd" : "chroot";
+            RunQuiet(cmd, args, logAction);
+        }
+    }
+
+    private static void RunQuiet(string cmd, string args, Action<string>? logAction)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = cmd,
+                Arguments = args,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            p?.WaitForExit();
+        }
+        catch (Exception ex)
+        {
+            logAction?.Invoke($"[grey]Note: {cmd} {args}: {ex.Message}[/]");
+        }
+    }
+
    /// <summary>
     /// Applies the downloaded RPM updates via the native RPM binary.
     /// </summary>
