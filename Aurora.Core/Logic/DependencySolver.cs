@@ -17,6 +17,7 @@ public class DependencySolver
 {
     private readonly HashSet<string> _installedNevras;
     private readonly HashSet<string> _installedNames;
+    private readonly HashSet<string> _installedConflictTargets;
     private readonly Dictionary<string, List<(Package Pkg, string ProvString)>> _providersMap;
 
     /// <summary>
@@ -31,6 +32,12 @@ public class DependencySolver
 
         _installedNevras = installedList.Select(p => p.Nevra).ToHashSet();
         _installedNames = installedList.Select(p => p.Name).ToHashSet();
+
+        // Pre-compute conflict names declared by installed packages (reverse direction lookup)
+        _installedConflictTargets = new HashSet<string>();
+        for (var i = 0; i < installedList.Count; i++)
+            foreach (var c in installedList[i].Conflicts)
+                _installedConflictTargets.Add(ParseProvideName(c));
 
         var allPackages = availablePackages.Concat(installedList).DistinctBy(p => p.Nevra).ToList();
 
@@ -254,6 +261,13 @@ public class DependencySolver
             if (requester != null && IsSatisfiedByInstalled(validCandidates))
                 continue;
 
+            // Filter out candidates that would conflict with already-installed packages.
+            // E.g. coreutils conflicts with installed coreutils-single, or systemd
+            // conflicts with installed systemd-standalone-tmpfiles.
+            var nonConflicting = FilterNonConflictingWithInstalled(validCandidates);
+            if (nonConflicting.Count > 0)
+                validCandidates = nonConflicting;
+
             var chosenPkg = PickBestCandidate(lookupName, validCandidates);
 
             if (TryAddToPlan(plan, chosenPkg, req, requester))
@@ -308,6 +322,41 @@ public class DependencySolver
         }
 
         return false;
+    }
+
+    /// <summary>
+    ///     Filters out candidates whose Conflicts list includes an installed package name,
+    ///     or that are named in an installed package's Conflicts list.
+    ///     Returns the filtered list, or an empty list if every candidate conflicts.
+    /// </summary>
+    private List<(Package Pkg, string ProvStr)> FilterNonConflictingWithInstalled(
+        IReadOnlyList<(Package Pkg, string ProvStr)> candidates)
+    {
+        var result = new List<(Package Pkg, string ProvStr)>(candidates.Count);
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            var pkg = candidates[i].Pkg;
+
+            // Candidate declares conflict with an installed package name
+            var blocked = false;
+            for (var j = 0; j < pkg.Conflicts.Count; j++)
+            {
+                if (_installedNames.Contains(ParseProvideName(pkg.Conflicts[j])))
+                {
+                    blocked = true;
+                    break;
+                }
+            }
+
+            // Installed package declares conflict with candidate name
+            if (!blocked && _installedConflictTargets.Contains(pkg.Name))
+                blocked = true;
+
+            if (!blocked)
+                result.Add(candidates[i]);
+        }
+
+        return result;
     }
 
     /// <summary>

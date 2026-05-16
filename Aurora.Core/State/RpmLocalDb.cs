@@ -10,12 +10,12 @@ public static class RpmLocalDb
     {
         var packages = new List<Package>();
         
-        // RPM Query Format: NAME|EPOCH|VERSION|RELEASE|ARCH|SIZE|PROVIDES(space separated)|REQUIRES(space separated)
-        // We use [%{PROVIDES} ] and [%{REQUIRES} ] to iterate through all provides/requires with spaces between them.
+        // RPM Query Format: NAME|EPOCH|VERSION|RELEASE|ARCH|SIZE|PROVIDES|REQUIRES|CONFLICTS (space-separated lists)
+        // We use [%{TAG} ] to iterate through array tags with spaces between them.
         var psi = new ProcessStartInfo
         {
             FileName = "rpm",
-            Arguments = "--root " + sysRoot + " -qa --qf \"%{NAME}|%{EPOCHNUM}|%{VERSION}|%{RELEASE}|%{ARCH}|%{SIZE}|[%{PROVIDES} ]|[%{REQUIRES} ]\\n\"",
+            Arguments = "--root " + sysRoot + " -qa --qf \"%{NAME}|%{EPOCHNUM}|%{VERSION}|%{RELEASE}|%{ARCH}|%{SIZE}|[%{PROVIDES} ]|[%{REQUIRES} ]|[%{CONFLICTS} ]\\n\"",
             RedirectStandardOutput = true,
             UseShellExecute = false,
             CreateNoWindow = true
@@ -57,6 +57,13 @@ public static class RpmLocalDb
                 {
                     var requiresList = parts[7].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                     pkg.Requires.AddRange(requiresList);
+                }
+
+                // Populate Conflicts from the 9th column
+                if (parts.Length >= 9 && !string.IsNullOrWhiteSpace(parts[8]))
+                {
+                    var conflictsList = parts[8].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    pkg.Conflicts.AddRange(conflictsList);
                 }
 
                 packages.Add(pkg);
