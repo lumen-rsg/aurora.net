@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Aurora.Core.IO;
 using Aurora.Core.Logging;
@@ -23,6 +24,9 @@ public class RepoManager
     private readonly HttpClient _client;
     public bool SkipSignatureCheck { get; set; } = false;
 
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan MirrorResolveTimeout = TimeSpan.FromSeconds(30);
+
     // Per-session mirror resolution cache: repoId -> resolved base URL
     private readonly Dictionary<string, string> _resolvedUrls = new();
 
@@ -36,9 +40,12 @@ public class RepoManager
             AutomaticDecompression = DecompressionMethods.All,
             ConnectCallback = async (context, cancellationToken) =>
             {
-                var entry = await Dns.GetHostEntryAsync(context.DnsEndPoint.Host, AddressFamily.InterNetwork, cancellationToken);
+                using var dnsCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                dnsCts.CancelAfter(ConnectTimeout);
+
+                var entry = await Dns.GetHostEntryAsync(context.DnsEndPoint.Host, AddressFamily.InterNetwork, dnsCts.Token);
                 var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-                await socket.ConnectAsync(new IPEndPoint(entry.AddressList[0], context.DnsEndPoint.Port), cancellationToken);
+                await socket.ConnectAsync(new IPEndPoint(entry.AddressList[0], context.DnsEndPoint.Port), dnsCts.Token);
                 return new NetworkStream(socket, true);
             }
         };
@@ -426,8 +433,10 @@ public class RepoManager
     {
         try
         {
+            using var resolveCts = new CancellationTokenSource(MirrorResolveTimeout);
+
             using var request = new HttpRequestMessage(HttpMethod.Get, metalinkUrl) { Version = HttpVersion.Version11 };
-            using var response = await _client.SendAsync(request);
+            using var response = await _client.SendAsync(request, resolveCts.Token);
             response.EnsureSuccessStatusCode();
 
             var xml = await response.Content.ReadAsStringAsync();
@@ -441,9 +450,10 @@ public class RepoManager
             {
                 try
                 {
+                    using var probeCts = new CancellationTokenSource(MirrorResolveTimeout);
                     var testUri = BuildUri(url, "repodata/repomd.xml");
                     using var headReq = new HttpRequestMessage(HttpMethod.Head, testUri) { Version = HttpVersion.Version11 };
-                    using var headResp = await _client.SendAsync(headReq);
+                    using var headResp = await _client.SendAsync(headReq, probeCts.Token);
                     if (headResp.IsSuccessStatusCode)
                         return url.TrimEnd('/') + "/";
                 }
@@ -463,8 +473,10 @@ public class RepoManager
     {
         try
         {
+            using var resolveCts = new CancellationTokenSource(MirrorResolveTimeout);
+
             using var request = new HttpRequestMessage(HttpMethod.Get, mirrorlistUrl) { Version = HttpVersion.Version11 };
-            using var response = await _client.SendAsync(request);
+            using var response = await _client.SendAsync(request, resolveCts.Token);
             response.EnsureSuccessStatusCode();
 
             var content = await response.Content.ReadAsStringAsync();
