@@ -34,6 +34,25 @@ public class UpdateCommand : ICommand
             return;
         }
 
+        // Resolve full dependency graph — the new package versions may require
+        // packages that aren't installed or need upgrading alongside.
+        List<Package> fullPlan;
+        List<Package> additionalDeps;
+        try
+        {
+            var installedPkgs = RpmLocalDb.GetInstalledPackages(config.SysRoot).ToList();
+            (fullPlan, additionalDeps) = SystemUpdater.ResolveUpdateDependencies(
+                updatePlan, availablePackages, installedPkgs);
+            if (additionalDeps.Count > 0)
+                AnsiConsole.MarkupLine($"[grey]Resolved {additionalDeps.Count} additional dependency packages.[/]");
+        }
+        catch (Exception ex)
+        {
+            AuLogger.Warn($"Dependency resolution failed: {ex.Message}. Falling back to direct update.");
+            fullPlan = updatePlan.Select(p => p.NewPkg).ToList();
+            additionalDeps = new List<Package>();
+        }
+
         AnsiConsole.Write(new Rule("[yellow]System Update[/]").RuleStyle("grey"));
         var table = new Table().Border(TableBorder.Rounded);
         table.AddColumn("Package");
@@ -47,15 +66,23 @@ public class UpdateCommand : ICommand
             table.AddRow($"[cyan]{pair.NewPkg.Name}[/]", $"[grey]{pair.OldVer}[/]", $"[green]{pair.NewVer}[/]", FormatBytes(pair.NewPkg.Size));
             totalDownloadSize += pair.NewPkg.Size;
         }
+        if (additionalDeps.Count > 0)
+        {
+            foreach (var dep in additionalDeps)
+            {
+                table.AddRow($"[blue]{dep.Name}[/]", "[grey](new)[/]", $"[green]{dep.FullVersion}[/]", FormatBytes(dep.Size));
+                totalDownloadSize += dep.Size;
+            }
+        }
         AnsiConsole.Write(table);
-        AnsiConsole.MarkupLine($"Total packages: [bold]{updatePlan.Count}[/]");
+        AnsiConsole.MarkupLine($"Total packages: [bold]{fullPlan.Count}[/] ({updatePlan.Count} upgrades, {additionalDeps.Count} dependencies)");
         AnsiConsole.MarkupLine($"Total download size: [bold green]{FormatBytes(totalDownloadSize)}[/]");
 
         if (!config.AssumeYes && !AnsiConsole.Confirm("Proceed with update?")) return;
 
-        // Download
+        // Download — preserve topological order via indexed array
         var repoMgr = new RepoManager(config.SysRoot) { SkipSignatureCheck = config.SkipGpg };
-        var packagePaths = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var packagePaths = new string[fullPlan.Count];
         var semaphore = new SemaphoreSlim(5);
 
         if (!Directory.Exists(config.CacheDir)) Directory.CreateDirectory(config.CacheDir);
@@ -65,9 +92,8 @@ public class UpdateCommand : ICommand
             .Columns(new ProgressColumn[] { new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new DownloadedColumn(), new SpinnerColumn() })
             .StartAsync(async ctx =>
             {
-                var tasks = updatePlan.Select(async pair =>
+                var tasks = fullPlan.Select(async (pkg, index) =>
                 {
-                    var pkg = pair.NewPkg;
                     await semaphore.WaitAsync();
                     var task = ctx.AddTask($"[grey]{pkg.Name}[/]");
                     try
@@ -77,8 +103,8 @@ public class UpdateCommand : ICommand
                             if (total.HasValue) { task.MaxValue = total.Value; task.Value = current; }
                             else task.IsIndeterminate = true;
                         });
-                        if (path == null) throw new FileNotFoundException($"Update for {pkg.Name} not found.");
-                        packagePaths.Add(path);
+                        if (path == null) throw new FileNotFoundException($"Package {pkg.Name} not found.");
+                        packagePaths[index] = path;
                     }
                     catch (Exception ex)
                     {
@@ -119,7 +145,14 @@ public class UpdateCommand : ICommand
                     OldVersion = pair.OldVer,
                     NewVersion = pair.NewVer,
                     Arch = pair.NewPkg.Arch
-                });
+                }).Concat(additionalDeps.Select(dep => new HistoryEntry
+                {
+                    Action = "dep-install",
+                    PackageName = dep.Name,
+                    Epoch = dep.Epoch,
+                    NewVersion = dep.FullVersion,
+                    Arch = dep.Arch
+                }));
                 await TransactionHistory.RecordTransactionAsync(config.DbPath, "update", historyEntries);
             }
             catch (Exception histEx) { AuLogger.Error($"Failed to record history: {histEx.Message}"); }

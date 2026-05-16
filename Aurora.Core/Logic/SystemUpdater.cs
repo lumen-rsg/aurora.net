@@ -51,6 +51,27 @@ public class SystemUpdater
         return plan;
     }
 
+    /// <summary>
+    /// Resolves the full dependency graph for a set of update packages,
+    /// pulling in any new or upgraded dependencies required by the new versions.
+    /// Returns all packages in topological (dependency-first) order and the
+    /// subset that are additional dependencies not in the original update set.
+    /// </summary>
+    public static (List<Package> FullPlan, List<Package> AdditionalDeps) ResolveUpdateDependencies(
+        List<UpdatePair> updatePairs,
+        IEnumerable<Package> allRepoPackages,
+        IEnumerable<Package> installedPackages)
+    {
+        var targets = updatePairs.Select(p => p.NewPkg.Name).ToList();
+        var solver = new DependencySolver(allRepoPackages, installedPackages);
+        var fullPlan = solver.Resolve(targets, resolveRecommends: true);
+
+        var updateNames = new HashSet<string>(targets);
+        var additionalDeps = fullPlan.Where(p => !updateNames.Contains(p.Name)).ToList();
+
+        return (fullPlan, additionalDeps);
+    }
+
    /// <summary>
     /// Applies the downloaded RPM updates via the native RPM binary.
     /// </summary>
