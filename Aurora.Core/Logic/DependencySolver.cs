@@ -19,6 +19,7 @@ public class DependencySolver
     private readonly HashSet<string> _installedNames;
     private readonly HashSet<string> _installedConflictTargets;
     private readonly Dictionary<string, List<(Package Pkg, string ProvString)>> _providersMap;
+    private readonly string _sysRoot;
 
     /// <summary>
     ///     Creates a new solver over the given available and installed package sets.
@@ -26,8 +27,9 @@ public class DependencySolver
     /// </summary>
     /// <param name="availablePackages">Packages available in configured repositories.</param>
     /// <param name="installedPackages">Packages currently installed on the system.</param>
-    public DependencySolver(IEnumerable<Package> availablePackages, IEnumerable<Package> installedPackages)
+    public DependencySolver(IEnumerable<Package> availablePackages, IEnumerable<Package> installedPackages, string sysRoot = "/")
     {
+        _sysRoot = sysRoot;
         var installedList = installedPackages.ToList();
 
         _installedNevras = installedList.Select(p => p.Nevra).ToHashSet();
@@ -488,6 +490,22 @@ public class DependencySolver
             AnsiConsole.MarkupLine(
                 $"[grey]Bypassing virtual identity:[/] {lookupName}[grey](Handled by sysusers)[/]");
             return;
+        }
+
+        // File-path deps may be satisfied by files already on the filesystem
+        // (e.g. /etc/pam.d/system-auth created by authselect scriptlets).
+        // No package in the repo may own them, but they exist on disk.
+        if (lookupName.StartsWith('/'))
+        {
+            var fullPath = _sysRoot == "/"
+                ? lookupName
+                : Path.Combine(_sysRoot, lookupName.TrimStart('/'));
+            if (File.Exists(fullPath))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[grey]Bypassing file dependency:[/] {lookupName} [grey](satisfied by filesystem)[/]");
+                return;
+            }
         }
 
         var requesterInfo = requester != null ? $" (required by [bold]{requester.Name}[/])" : "";

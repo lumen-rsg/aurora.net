@@ -60,11 +60,13 @@ public class SystemUpdater
     public static (List<Package> FullPlan, List<Package> AdditionalDeps) ResolveUpdateDependencies(
         List<UpdatePair> updatePairs,
         IEnumerable<Package> allRepoPackages,
-        IEnumerable<Package> installedPackages)
+        IEnumerable<Package> installedPackages,
+        string sysRoot = "/",
+        bool resolveRecommends = true)
     {
         var targets = updatePairs.Select(p => p.NewPkg.Name).ToList();
-        var solver = new DependencySolver(allRepoPackages, installedPackages);
-        var fullPlan = solver.Resolve(targets, resolveRecommends: true);
+        var solver = new DependencySolver(allRepoPackages, installedPackages, sysRoot);
+        var fullPlan = solver.Resolve(targets, resolveRecommends: resolveRecommends);
 
         var updateNames = new HashSet<string>(targets);
         var additionalDeps = fullPlan.Where(p => !updateNames.Contains(p.Name)).ToList();

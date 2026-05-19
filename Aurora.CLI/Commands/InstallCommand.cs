@@ -110,7 +110,7 @@ public class InstallCommand : ICommand
         var sw = Stopwatch.StartNew();
         try
         {
-            var solver = new DependencySolver(availablePackages, installedPkgs);
+            var solver = new DependencySolver(availablePackages, installedPkgs, config.SysRoot);
 
             int resolvedCount = 0;
             plan = AnsiConsole.Status()

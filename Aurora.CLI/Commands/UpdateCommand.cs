@@ -36,21 +36,35 @@ public class UpdateCommand : ICommand
 
         // Resolve full dependency graph — the new package versions may require
         // packages that aren't installed or need upgrading alongside.
+        var installedPkgs = RpmLocalDb.GetInstalledPackages(config.SysRoot).ToList();
         List<Package> fullPlan;
         List<Package> additionalDeps;
         try
         {
-            var installedPkgs = RpmLocalDb.GetInstalledPackages(config.SysRoot).ToList();
             (fullPlan, additionalDeps) = SystemUpdater.ResolveUpdateDependencies(
-                updatePlan, availablePackages, installedPkgs);
+                updatePlan, availablePackages, installedPkgs, config.SysRoot);
             if (additionalDeps.Count > 0)
                 AnsiConsole.MarkupLine($"[grey]Resolved {additionalDeps.Count} additional dependency packages.[/]");
         }
         catch (Exception ex)
         {
-            AuLogger.Warn($"Dependency resolution failed: {ex.Message}. Falling back to direct update.");
-            fullPlan = updatePlan.Select(p => p.NewPkg).ToList();
-            additionalDeps = new List<Package>();
+            AuLogger.Warn($"Dependency resolution failed: {ex.Message}");
+            AnsiConsole.MarkupLine($"[yellow]Warning:[/] Dependency resolution failed, retrying without recommends...");
+
+            try
+            {
+                (fullPlan, additionalDeps) = SystemUpdater.ResolveUpdateDependencies(
+                    updatePlan, availablePackages, installedPkgs, config.SysRoot, resolveRecommends: false);
+                if (additionalDeps.Count > 0)
+                    AnsiConsole.MarkupLine($"[grey]Resolved {additionalDeps.Count} additional dependency packages.[/]");
+            }
+            catch (Exception ex2)
+            {
+                AuLogger.Warn($"Retry without recommends failed: {ex2.Message}");
+                AnsiConsole.MarkupLine($"[red]Could not resolve dependencies.[/] Proceeding with direct update targets only.");
+                fullPlan = updatePlan.Select(p => p.NewPkg).ToList();
+                additionalDeps = new List<Package>();
+            }
         }
 
         AnsiConsole.Write(new Rule("[yellow]System Update[/]").RuleStyle("grey"));
